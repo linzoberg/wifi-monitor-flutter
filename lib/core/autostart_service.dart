@@ -21,7 +21,7 @@ import 'constants.dart';
 
 class AutostartService {
   /// Переопределение команды запуска (для тестов или ручной правки путей).
-  /// В проде null → берём Platform.resolvedExecutable.
+  /// В проде null → берём Platform.resolvedExecutable + --autostart.
   final String? _overrideCommand;
 
   const AutostartService({String? overrideCommand})
@@ -52,6 +52,10 @@ class AutostartService {
 
   /// Включает/выключает автозапуск. Возвращает true при успехе.
   /// При выключении отсутствие значения трактуем как успех (как Python).
+  ///
+  /// Раньше тут был костыль с матчингом сообщения исключения по подстрокам
+  /// ("not found"/"(0x2)"). Это хрупко при смене локали Windows; теперь
+  /// просто проверяем наличие значения и удаляем только если оно есть.
   Future<bool> setEnabled(bool enabled) async {
     if (!Platform.isWindows) return true; // тихий no-op
     RegistryKey? key;
@@ -71,20 +75,10 @@ class AutostartService {
           ),
         );
       } else {
-        try {
+        // Удаляем только если значение реально есть — иначе считаем,
+        // что задача "выключено" уже выполнена.
+        if (key.getValue(kAutostartValueName) != null) {
           key.deleteValue(kAutostartValueName);
-        } catch (e) {
-          // ERROR_FILE_NOT_FOUND (2) — значит уже выключено, это норм.
-          // win32_registry бросает WindowsException, но публично его
-          // не экспортирует, поэтому проверяем по сообщению/коду
-          // через duck-typing и просто игнорируем «не найдено».
-          final msg = e.toString().toLowerCase();
-          final notFound = msg.contains('not found') ||
-              msg.contains('cannot find') ||
-              msg.contains('(0x2)') ||
-              msg.contains(' 2)') ||
-              msg.contains('error_file_not_found');
-          if (!notFound) rethrow;
         }
       }
       return true;
@@ -95,12 +89,15 @@ class AutostartService {
     }
   }
 
-  /// Команда для записи в реестр. На Windows — путь к .exe в кавычках.
+  /// Команда для записи в реестр. На Windows — путь к .exe в кавычках
+  /// плюс флаг [kAutostartArgument], чтобы при автозапуске окно НЕ всплывало,
+  /// а сразу пряталось в трей (см. main.dart → _isAutostart).
+  ///
   /// Под отладкой (dart/flutter run) тоже возвращаем resolvedExecutable —
   /// чтобы из реестра запускался именно тот процесс, который сейчас крутится.
   String exeCommand() {
     if (_overrideCommand != null) return _overrideCommand;
     final exe = Platform.resolvedExecutable;
-    return '"$exe"';
+    return '"$exe" $kAutostartArgument';
   }
 }

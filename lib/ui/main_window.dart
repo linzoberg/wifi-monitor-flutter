@@ -10,31 +10,26 @@
 //   • Кнопки: «Запуск мониторинга» / «Остановить» / «Очистить лог» / «Настройки».
 //   • Нижняя статусная строка с цветом (зелёный/красный/серый).
 //   • Закрытие окна → preventClose → hide() + балун в трее.
-//   • На смену настроек: при изменении checkInterval / routerIp пересоздаём
-//     WiFiMonitor + MonitorService; при смене pingInterval — пересоздаём
-//     PingService.
 //
 // Что было оптимизировано (без потери функционала и без изменения дизайна):
-//   • Цвет нижнего статуса теперь берётся из MonitorStatus.severity, а не
-//     из подстрок в русском тексте — нельзя «потерять» сообщение из-за опечатки.
-//   • Цвет ping-плашки берётся из PingResult.severity — одна точка правды.
-//   • Свёрнутый список кнопок построен в цикле, чтобы не дублировать стили.
-//   • Лог-список переиспользует общий ScrollController и автоскролл идёт
-//     только тогда, когда пользователь уже у нижней границы (не «угоняет»
-//     прокрутку, если человек читает старые строки).
+//   • Вся логика владения сервисами/буфером лога ушла в MainWindowController
+//     (ChangeNotifier). Виджет теперь только подписывается и рисует.
+//   • Маппинг severity → цвет/жирность — в core/severity_palette.dart,
+//     одна точка правды для нижней полосы и ping-плашки.
+//   • Список кнопок построен в цикле — никаких 4 одинаковых блоков.
+//   • Автоскролл лога идёт только если пользователь уже у нижней границы:
+//     не «угоняет» прокрутку, когда человек читает старые строки.
 // ─────────────────────────────────────────────
-
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../core/constants.dart';
+import '../core/log_buffer.dart';
 import '../core/models.dart';
-import '../core/monitor_service.dart';
-import '../core/ping_service.dart';
 import '../core/settings_service.dart';
-import '../core/wifi_monitor.dart';
+import '../core/severity_palette.dart';
+import 'main_window_controller.dart';
 import 'prefs_dialog.dart';
 import 'styles.dart';
 import 'tray_controller.dart';
@@ -70,186 +65,44 @@ class MainWindow extends StatefulWidget {
 }
 
 class _MainWindowState extends State<MainWindow> with WindowListener {
-  // ── Состояние мониторинга ────────────────
-  late Prefs _prefs;
-  late WiFiMonitor _wifi;
-  MonitorService? _monitor;
-  PingService? _ping;
-  StreamSubscription<MonitorEvent>? _monitorSub;
-  StreamSubscription<PingResult>? _pingSub;
-
-  // ── Состояние UI ─────────────────────────
-  /// Список строк лога с уже подставленным timestamp-ом.
-  final List<String> _logLines = <String>[];
-  String _lastLogMessage = '';
+  late final MainWindowController _vm;
   final ScrollController _logScroll = ScrollController();
-
-  String _pingText = 'Ожидание...';
-  Color _pingColor = AppColors.textMuted;
-
-  String _bottomText = 'Готов к работе...';
-  Color _bottomColor = AppColors.textMuted;
-  FontWeight _bottomWeight = FontWeight.normal;
-
-  bool _isRunning = false;
 
   @override
   void initState() {
     super.initState();
-    _prefs = widget.initialPrefs;
-    _wifi = _buildWifi(_prefs);
+
+    _vm = MainWindowController(
+      credentials: widget.credentials,
+      initialPrefs: widget.initialPrefs,
+      settings: widget.settings,
+    )
+      ..onConnectionChanged = _onConnectionChanged
+      ..addListener(_onVmChanged);
 
     windowManager.addListener(this);
     // Перехватываем системное закрытие, чтобы свернуть в трей.
     windowManager.setPreventClose(true);
 
-    _initPing();
-    _startMonitoring();
+    _vm.start();
   }
 
   @override
   void dispose() {
     windowManager.removeListener(this);
-    _monitorSub?.cancel();
-    _pingSub?.cancel();
-    _monitor?.dispose();
-    _ping?.dispose();
+    _vm.removeListener(_onVmChanged);
+    _vm.dispose();
     _logScroll.dispose();
     super.dispose();
   }
 
-  WiFiMonitor _buildWifi(Prefs p) => WiFiMonitor(
-        ssid: widget.credentials.ssid,
-        password: widget.credentials.password,
-        routerIp: p.routerIp,
-      );
-
   // ────────────────────────────────────────
-  //  Мониторинг
+  //  Реакция на изменения ViewModel
   // ────────────────────────────────────────
-  void _startMonitoring() {
-    if (_isRunning) return;
 
-    final service = MonitorService(
-      monitor: _wifi,
-      checkIntervalSec: _prefs.checkInterval,
-    );
-    _monitorSub = service.events.listen(_onMonitorEvent);
-    service.start();
-    _monitor = service;
-
-    setState(() => _isRunning = true);
-    _addStatus('Мониторинг запущен', newLine: true);
-  }
-
-  Future<void> _stopMonitoring() async {
-    final svc = _monitor;
-    if (svc != null) {
-      await _monitorSub?.cancel();
-      _monitorSub = null;
-      _monitor = null;
-      await svc.dispose();
-    }
-    if (mounted) {
-      setState(() => _isRunning = false);
-      _addStatus('Мониторинг остановлен', newLine: true);
-    } else {
-      _isRunning = false;
-    }
-  }
-
-  void _initPing() {
-    final svc = PingService(pingIntervalSec: _prefs.pingInterval);
-    _pingSub = svc.results.listen(_onPingResult);
-    svc.start();
-    _ping = svc;
-  }
-
-  Future<void> _stopPing() async {
-    final svc = _ping;
-    if (svc == null) return;
-    await _pingSub?.cancel();
-    _pingSub = null;
-    _ping = null;
-    await svc.dispose();
-  }
-
-  // ────────────────────────────────────────
-  //  Обработчики событий сервисов
-  // ────────────────────────────────────────
-  void _onMonitorEvent(MonitorEvent event) {
-    final text = event.status.message(_wifi.ssid);
-
-    _addStatus(text, newLine: event.statusChanged);
-
-    // Цвет / жирность теперь идут из severity, а не из contains() по строке.
-    final (color, weight) = _statusBottomStyle(event.status);
-    setState(() {
-      _bottomText = text;
-      _bottomColor = color;
-      _bottomWeight = weight;
-    });
-
-    widget.tray.setConnected(event.status.isConnected, ssid: _wifi.ssid);
-  }
-
-  (Color, FontWeight) _statusBottomStyle(MonitorStatus s) {
-    switch (s.severity) {
-      case StatusSeverity.ok:
-        return (AppColors.statusOk, FontWeight.bold);
-      case StatusSeverity.error:
-        return (AppColors.statusError, FontWeight.bold);
-      case StatusSeverity.warn:
-        return (AppColors.statusWarn, FontWeight.bold);
-      case StatusSeverity.neutral:
-        return (AppColors.textMuted, FontWeight.normal);
-    }
-  }
-
-  void _onPingResult(PingResult r) {
-    setState(() {
-      _pingText = r.label;
-      _pingColor = _severityColor(r.severity);
-    });
-  }
-
-  Color _severityColor(StatusSeverity s) {
-    switch (s) {
-      case StatusSeverity.ok:
-        return AppColors.statusOk;
-      case StatusSeverity.warn:
-        return AppColors.statusWarn;
-      case StatusSeverity.error:
-        return AppColors.statusError;
-      case StatusSeverity.neutral:
-        return AppColors.textMuted;
-    }
-  }
-
-  // ────────────────────────────────────────
-  //  Лог
-  // ────────────────────────────────────────
-  /// Добавляет строку с timestamp-ом. Если newLine=false — заменяет последнюю
-  /// строку (как cursor.removeSelectedText + insertText в Python).
-  /// Дедупликация: повтор того же сообщения — только обновляем время.
-  void _addStatus(String message, {bool newLine = false}) {
-    final ts = _formatTime(DateTime.now());
-    final formatted = '[$ts] $message';
-
-    if (message == _lastLogMessage && _logLines.isNotEmpty) {
-      _logLines[_logLines.length - 1] = formatted;
-    } else if (newLine || _logLines.isEmpty) {
-      _logLines.add(formatted);
-      _lastLogMessage = message;
-      _trimLogIfNeeded();
-    } else {
-      _logLines[_logLines.length - 1] = formatted;
-      _lastLogMessage = message;
-    }
-
+  void _onVmChanged() {
     if (!mounted) return;
-    // Запоминаем, был ли пользователь у самого низа ДО setState,
-    // чтобы не «угонять» прокрутку, если он скроллит вверх читая старое.
+    // Запоминаем позицию ДО ребилда, чтобы не «угнать» прокрутку.
     final stickToBottom = _isScrolledToBottom();
     setState(() {});
     if (stickToBottom) {
@@ -257,16 +110,18 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
     }
   }
 
+  void _onConnectionChanged(bool connected, String ssid) {
+    widget.tray.setConnected(connected, ssid: ssid);
+  }
+
+  // ────────────────────────────────────────
+  //  Прокрутка лога
+  // ────────────────────────────────────────
+
   bool _isScrolledToBottom() {
     if (!_logScroll.hasClients) return true;
     final pos = _logScroll.position;
     return pos.pixels >= pos.maxScrollExtent - 24;
-  }
-
-  void _trimLogIfNeeded() {
-    if (_logLines.length <= kMaxLogLines) return;
-    final excess = _logLines.length - kMaxLogLines;
-    _logLines.removeRange(0, excess);
   }
 
   void _scrollLogToEnd() {
@@ -274,57 +129,20 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
     _logScroll.jumpTo(_logScroll.position.maxScrollExtent);
   }
 
-  void _clearLog() {
-    setState(() {
-      _logLines.clear();
-      _lastLogMessage = '';
-    });
-    _addStatus('Лог очищен', newLine: true);
-  }
-
-  String _formatTime(DateTime t) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(t.hour)}:${two(t.minute)}:${two(t.second)}';
-  }
-
   // ────────────────────────────────────────
-  //  Настройки
+  //  Действия из UI
   // ────────────────────────────────────────
+
   Future<void> _openSettings() async {
-    final updated = await showPrefsDialog(context, current: _prefs);
+    final updated = await showPrefsDialog(context, current: _vm.prefs);
     if (updated == null || !mounted) return;
-
-    final old = _prefs;
-    _prefs = updated;
-    await widget.settings.savePrefs(updated);
-
-    // Если поменялся интервал проверки или IP роутера — пересоздаём
-    // WiFiMonitor + MonitorService (оба immutable по этим полям).
-    final monitorNeedsRebuild = updated.checkInterval != old.checkInterval ||
-        updated.routerIp != old.routerIp;
-    if (monitorNeedsRebuild) {
-      final wasRunning = _isRunning;
-      await _stopMonitoring();
-      _wifi = _buildWifi(_prefs);
-      if (wasRunning) _startMonitoring();
-    }
-
-    // Сменился интервал пинга — пересоздаём PingService.
-    if (updated.pingInterval != old.pingInterval) {
-      await _stopPing();
-      _initPing();
-    }
-
-    _addStatus(
-      'Настройки обновлены: проверка ${updated.checkInterval} с, '
-      'пинг ${updated.pingInterval} с',
-      newLine: true,
-    );
+    await _vm.applyPrefs(updated);
   }
 
   // ────────────────────────────────────────
   //  Закрытие окна → в трей
   // ────────────────────────────────────────
+
   @override
   void onWindowClose() async {
     final isPrevented = await windowManager.isPreventClose();
@@ -339,8 +157,13 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   // ────────────────────────────────────────
   //  Build
   // ────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
+    final ping = _vm.pingResult;
+    final status = _vm.status;
+    final bottomText = status.message(_vm.ssid);
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: Padding(
@@ -359,57 +182,25 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
             Padding(
               padding: const EdgeInsets.only(bottom: 5),
               child: Text(
-                'Мониторинг сети: ${_wifi.ssid}',
+                'Мониторинг сети: ${_vm.ssid}',
                 style: kInfoStyle,
               ),
             ),
             const SizedBox(height: 5),
-            _buildPingFrame(),
+            _PingFrame(label: ping.label, color: severityColor(ping.severity)),
             const SizedBox(height: 10),
             kSeparator(),
             const SizedBox(height: 10),
-            Expanded(child: _buildLog()),
+            Expanded(child: _LogView(scroll: _logScroll, buffer: _vm.log)),
             const SizedBox(height: 10),
             _buildButtonsRow(),
             const SizedBox(height: 10),
-            _buildBottomStatus(),
+            _BottomStatus(
+              text: bottomText,
+              color: severityColor(status.severity),
+              weight: severityWeight(status.severity),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPingFrame() {
-    return Container(
-      decoration: kPingFrameDecoration(),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Row(
-        children: [
-          const Text('Ping:', style: kPingTitleStyle),
-          const SizedBox(width: 6),
-          Text(
-            _pingText,
-            style: kPingValueBaseStyle.copyWith(color: _pingColor),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLog() {
-    return Container(
-      decoration: kLogDecoration(),
-      padding: const EdgeInsets.all(10),
-      child: Scrollbar(
-        controller: _logScroll,
-        thumbVisibility: true,
-        child: ListView.builder(
-          controller: _logScroll,
-          itemCount: _logLines.length,
-          itemBuilder: (ctx, i) => Text(
-            _logLines[i],
-            style: kLogStyle,
-          ),
         ),
       ),
     );
@@ -421,17 +212,17 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
       _ToolbarButton(
         label: 'Запуск мониторинга',
         style: kButtonStart,
-        onPressed: _isRunning ? null : _startMonitoring,
+        onPressed: _vm.isRunning ? null : _vm.startMonitoring,
       ),
       _ToolbarButton(
         label: 'Остановить',
         style: kButtonStop,
-        onPressed: _isRunning ? _stopMonitoring : null,
+        onPressed: _vm.isRunning ? () => _vm.stopMonitoring() : null,
       ),
       _ToolbarButton(
         label: 'Очистить лог',
         style: kButtonClear,
-        onPressed: _clearLog,
+        onPressed: _vm.clearLog,
       ),
       _ToolbarButton(
         label: 'Настройки',
@@ -447,18 +238,80 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
     }
     return Row(children: children);
   }
+}
 
-  Widget _buildBottomStatus() {
+// ── Под-виджеты ─────────────────────────────
+
+class _PingFrame extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _PingFrame({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: kPingFrameDecoration(),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      child: Row(
+        children: [
+          const Text('Ping:', style: kPingTitleStyle),
+          const SizedBox(width: 6),
+          Text(label, style: kPingValueBaseStyle.copyWith(color: color)),
+        ],
+      ),
+    );
+  }
+}
+
+class _LogView extends StatelessWidget {
+  final ScrollController scroll;
+  final LogBuffer buffer;
+
+  const _LogView({required this.scroll, required this.buffer});
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = buffer.lines;
+    return Container(
+      decoration: kLogDecoration(),
+      padding: const EdgeInsets.all(10),
+      child: Scrollbar(
+        controller: scroll,
+        thumbVisibility: true,
+        child: ListView.builder(
+          controller: scroll,
+          itemCount: lines.length,
+          itemBuilder: (ctx, i) => Text(lines[i], style: kLogStyle),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomStatus extends StatelessWidget {
+  final String text;
+  final Color color;
+  final FontWeight weight;
+
+  const _BottomStatus({
+    required this.text,
+    required this.color,
+    required this.weight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.only(top: 10),
       decoration: const BoxDecoration(
         border: Border(top: BorderSide(color: AppColors.surfaceLight)),
       ),
       child: Text(
-        _bottomText,
+        text,
         style: kBottomStatusBaseStyle.copyWith(
-          color: _bottomColor,
-          fontWeight: _bottomWeight,
+          color: color,
+          fontWeight: weight,
         ),
       ),
     );

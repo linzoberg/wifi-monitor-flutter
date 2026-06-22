@@ -23,6 +23,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'core/constants.dart';
 import 'core/models.dart';
 import 'core/settings_service.dart';
 import 'ui/credentials_dialog.dart';
@@ -30,15 +31,18 @@ import 'ui/main_window.dart';
 import 'ui/styles.dart';
 import 'ui/tray_controller.dart';
 
-/// Признак запуска через автозапуск (HKCU\...\Run кладёт команду без
-/// аргументов; Python-аналог получал `--autostart`, поэтому поддерживаем
-/// и этот флаг — на случай, если в реестре он будет добавлен вручную).
+/// Признак запуска через автозапуск. Команда в HKCU\...\Run
+/// теперь явно добавляет [kAutostartArgument] (см. AutostartService),
+/// но продолжаем понимать два альтернативных старых варианта на
+/// случай, если кто-то поправил реестр вручную.
 bool _isAutostart(List<String> args) {
+  const accepted = <String>{
+    kAutostartArgument,
+    '-autostart',
+    '/autostart',
+  };
   for (final a in args) {
-    final norm = a.trim().toLowerCase();
-    if (norm == '--autostart' || norm == '-autostart' || norm == '/autostart') {
-      return true;
-    }
+    if (accepted.contains(a.trim().toLowerCase())) return true;
   }
   return false;
 }
@@ -82,7 +86,7 @@ Future<void> main(List<String> args) async {
 
   // ── 2. Сервисы ─────────────────────────────
   final settings = SettingsService();
-  var creds = await settings.loadCredentials();
+  final creds = await settings.loadCredentials();
 
   // ── 3. Запускаем UI ────────────────────────
   // Сначала поднимаем приложение, чтобы был BuildContext для диалога

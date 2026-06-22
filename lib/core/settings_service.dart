@@ -96,10 +96,10 @@ class SettingsService {
   /// remember выставляется в true (как save_credentials в Python).
   Future<void> saveCredentials(String ssid, String password) async {
     return _runLocked(() async {
-      final json = await _readJsonRaw();
+      final json = await _readJson();
       json[_JsonKeys.remember] = true;
       json[_JsonKeys.ssid] = ssid;
-      await _writeJsonRaw(json);
+      await _writeJson(json);
 
       try {
         await _secure.write(key: _keyringKey(ssid), value: password);
@@ -113,11 +113,11 @@ class SettingsService {
   /// пароль удаляется из secure storage.
   Future<void> forgetCredentials() async {
     return _runLocked(() async {
-      final json = await _readJsonRaw();
+      final json = await _readJson();
       final oldSsid = _readString(json, _JsonKeys.ssid, '');
       json[_JsonKeys.remember] = false;
       json.remove(_JsonKeys.ssid);
-      await _writeJsonRaw(json);
+      await _writeJson(json);
 
       if (oldSsid.isNotEmpty) {
         try {
@@ -145,11 +145,11 @@ class SettingsService {
   Future<void> savePrefs(Prefs prefs) async {
     final clean = prefs.clamped();
     return _runLocked(() async {
-      final json = await _readJsonRaw();
+      final json = await _readJson();
       json[_JsonKeys.checkInterval] = clean.checkInterval;
       json[_JsonKeys.pingInterval] = clean.pingInterval;
       json[_JsonKeys.routerIp] = clean.routerIp;
-      await _writeJsonRaw(json);
+      await _writeJson(json);
     });
   }
 
@@ -186,29 +186,24 @@ class SettingsService {
 
   /// Безопасное чтение JSON: всегда возвращает Map, никаких исключений
   /// наружу. Если файла нет / он битый — пустой Map.
-  Future<Map<String, dynamic>> _readJson() async {
-    return _readJsonRaw();
-  }
-
-  Future<Map<String, dynamic>> _readJsonRaw() async {
+  Future<Map<String, Object?>> _readJson() async {
     try {
       final file = await _settingsFile();
-      if (!await file.exists()) return <String, dynamic>{};
+      if (!await file.exists()) return <String, Object?>{};
       final text = await file.readAsString();
-      if (text.trim().isEmpty) return <String, dynamic>{};
+      if (text.trim().isEmpty) return <String, Object?>{};
       final decoded = jsonDecode(text);
-      if (decoded is Map<String, dynamic>) return decoded;
-      if (decoded is Map) return decoded.cast<String, dynamic>();
-      return <String, dynamic>{};
+      if (decoded is Map) return decoded.cast<String, Object?>();
+      return <String, Object?>{};
     } catch (_) {
-      return <String, dynamic>{};
+      return <String, Object?>{};
     }
   }
 
   /// Безопасная запись: пишем во временный файл, затем атомарно
   /// переименовываем. Минимизирует риск получить битый JSON
   /// при падении/перезагрузке посреди записи.
-  Future<void> _writeJsonRaw(Map<String, dynamic> json) async {
+  Future<void> _writeJson(Map<String, Object?> json) async {
     try {
       final file = await _settingsFile();
       final tmp = File('${file.path}.tmp');
@@ -240,7 +235,7 @@ class SettingsService {
 
   // ── Хелперы для парсинга JSON ───────────────
 
-  static bool _readBool(Map<String, dynamic> json, String key, bool fallback) {
+  static bool _readBool(Map<String, Object?> json, String key, bool fallback) {
     final v = json[key];
     if (v is bool) return v;
     if (v is num) return v != 0;
@@ -253,7 +248,7 @@ class SettingsService {
   }
 
   static String _readString(
-    Map<String, dynamic> json,
+    Map<String, Object?> json,
     String key,
     String fallback,
   ) {

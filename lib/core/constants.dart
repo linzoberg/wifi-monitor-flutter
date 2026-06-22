@@ -66,3 +66,20 @@ const String kSettingsFileName = 'settings.json';
 
 /// Лимит строк в логе главного окна (как в Python MAX_LOG_LINES).
 const int kMaxLogLines = 500;
+
+// ─────────────────────────────────────────────
+// Трей
+// ─────────────────────────────────────────────
+
+/// Иконки трея — лежат в assets/ и подключены через pubspec.yaml.
+const String kTrayIconGreen = 'assets/tray_green.png';
+const String kTrayIconRed = 'assets/tray_red.png';
+const String kTrayDefaultTooltip = 'WiFi Monitor';
+
+// ─────────────────────────────────────────────
+// CLI
+// ─────────────────────────────────────────────
+
+/// Аргумент, который кладётся в HKCU\...\Run, чтобы при автозапуске
+/// окно не вылезало на экран, а оставалось свёрнутым в трей.
+const String kAutostartArgument = '--autostart';

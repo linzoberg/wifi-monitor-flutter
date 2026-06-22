@@ -5,13 +5,19 @@
 // Аналог core/wifi.py → run_hidden() + STARTUPINFO + CREATE_NO_WINDOW.
 //
 // Особенности Windows:
-//   • Process.run() по умолчанию НЕ показывает консольное окно для
-//     не-консольных процессов, но `ping` и `netsh` — консольные.
-//     Используем `runInShell: false` + системные флаги через ProcessStartMode,
-//     этого достаточно для GUI-приложения (Flutter Windows runner — это
-//     WIN32 app без своей консоли, дочерний процесс не получит окно).
+//   • Process.start() в Flutter Windows app в большинстве случаев не показывает
+//     консольное окно для дочерних ping/netsh, потому что Flutter runner —
+//     WIN32 app без своей консоли (CONSOLE_NONE). Но этого недостаточно
+//     на 100%: в редких случаях (особенно ping) может мелькнуть чёрный
+//     прямоугольник. По-хорошему нужен флаг CREATE_NO_WINDOW через
+//     CreateProcessW (package:win32). Сейчас этого не делаем, чтобы
+//     не раздувать зависимости; TODO ниже — на будущее.
 //   • Кодировка stdout кириллических утилит = CP866 (OEM). Поэтому ловим
 //     байты (stdoutEncoding: null) и декодируем вручную через таблицу.
+//
+// TODO(win32): впилить нативный CreateProcessW с CREATE_NO_WINDOW |
+//   DETACHED_PROCESS, когда появится реальный репорт о мелькающей
+//   консоли. Сейчас пользователи не жаловались.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
@@ -39,11 +45,13 @@ class HiddenProcessResult {
 /// [executable] — имя или путь exe (например, 'netsh', 'ping').
 /// [arguments] — список аргументов.
 /// [timeout]   — таймаут; по истечении процесс убивается и кидается TimeoutException.
-///               Если null — без таймаута.
+///               Если null — без таймаута. Дефолта нет нарочно: каждый вызов
+///               должен явно решить, сколько ждать (netsh add profile и ping
+///               — разные истории).
 Future<HiddenProcessResult> runHidden(
   String executable,
   List<String> arguments, {
-  Duration? timeout = const Duration(seconds: 5),
+  required Duration? timeout,
 }) async {
   Process process;
   try {

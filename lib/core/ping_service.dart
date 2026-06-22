@@ -6,6 +6,9 @@
 // Управление: start() / stop(). Прерываемый sleep реализован через
 // core/interruptible_sleep.dart, поэтому stop() не ждёт окончания
 // текущего интервала.
+//
+// Парсинг stdout вынесен в core/parsers.dart — единая точка правды
+// для русско/англоязычных версий Windows.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
@@ -13,16 +16,8 @@ import 'dart:async';
 import 'constants.dart';
 import 'interruptible_sleep.dart';
 import 'models.dart';
+import 'parsers.dart';
 import 'process_runner.dart';
-
-/// Время в выводе ping:
-///   • Windows ru-RU: "время=42мс" / "время<1мс"
-///   • Windows en:    "time=42ms"  / "time<1ms"
-final RegExp _rePingTime =
-    RegExp(r'(?:[Вв]ремя|[Tt]ime)\s*[=<]\s*(\d+)');
-
-final RegExp _rePingLt1 =
-    RegExp(r'(?:[Вв]ремя|[Tt]ime)\s*<\s*1');
 
 class PingService {
   final int pingIntervalSec;
@@ -35,8 +30,7 @@ class PingService {
   bool _running = false;
 
   PingService({required int pingIntervalSec})
-      : pingIntervalSec =
-            pingIntervalSec < 1 ? 1 : pingIntervalSec;
+      : pingIntervalSec = pingIntervalSec < 1 ? 1 : pingIntervalSec;
 
   /// Поток результатов пинга. Можно подписываться многократно.
   Stream<PingResult> get results => _controller.stream;
@@ -81,18 +75,20 @@ class PingService {
       final ms = await _ping(cmd);
       if (!_running) return;
 
-      if (ms == null) {
-        _emit(const PingUnreachable());
-      } else if (ms <= 1) {
-        // время < 1 мс — характерный признак VPN/локального туннеля.
-        _emit(const PingVpn());
-      } else {
-        _emit(PingOk(ms));
-      }
+      _emit(_classify(ms));
 
       if (!await _sleep.sleep(Duration(seconds: pingIntervalSec))) return;
       if (!_running) return;
     }
+  }
+
+  /// Превращает «сырой» результат ping в типизированный статус.
+  /// Вынесено в отдельный метод, чтобы было удобно покрыть тестами.
+  PingResult _classify(int? ms) {
+    if (ms == null) return const PingUnreachable();
+    // 0 мс = ответ «<1мс», характерно для VPN/локального туннеля.
+    if (ms <= 0) return const PingVpn();
+    return PingOk(ms);
   }
 
   void _emit(PingResult r) {
@@ -115,17 +111,7 @@ class PingService {
       return null;
     }
 
-    final output = result.stdout;
-    if (output.isEmpty) {
-      return result.ok && _rePingLt1.hasMatch(result.stderr) ? 1 : null;
-    }
-
-    final m = _rePingTime.firstMatch(output);
-    if (m != null) {
-      return int.tryParse(m.group(1)!);
-    }
-
-    if (result.ok && _rePingLt1.hasMatch(output)) return 1;
-    return null;
+    if (!result.ok) return null;
+    return parsePingTimeMs(result.stdout);
   }
 }

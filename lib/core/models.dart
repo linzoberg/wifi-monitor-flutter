@@ -159,6 +159,18 @@ class PingUnreachable extends PingResult {
   StatusSeverity get severity => StatusSeverity.error;
 }
 
+/// Начальный «пустой» пинг: ещё не было ни одного измерения.
+/// Нужен UI, чтобы показать «Ожидание...» до первого PingOk/PingVpn/PingUnreachable.
+class PingIdle extends PingResult {
+  const PingIdle();
+
+  @override
+  String get label => 'Ожидание...';
+
+  @override
+  StatusSeverity get severity => StatusSeverity.neutral;
+}
+
 /// Состояние подключения, которое отдаёт MonitorService в UI.
 sealed class MonitorStatus {
   const MonitorStatus();
@@ -262,6 +274,15 @@ class StatusError extends MonitorStatus {
 
   @override
   String message(String ssid) => 'Ошибка мониторинга: $error';
+}
+
+/// Начальное «ничего не произошло» состояние — используется UI
+/// для показа «Готов к работе...» до прихода первого MonitorEvent.
+class StatusIdle extends MonitorStatus {
+  const StatusIdle();
+
+  @override
+  String message(String ssid) => 'Готов к работе...';
 }
 
 /// Технические события (старт/стоп/сообщения от UI), которые нужно

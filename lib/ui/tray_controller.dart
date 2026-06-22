@@ -31,10 +31,9 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:tray_manager/tray_manager.dart';
 
+import '../core/constants.dart';
+
 class TrayController with TrayListener {
-  static const String _iconGreen = 'assets/tray_green.png';
-  static const String _iconRed = 'assets/tray_red.png';
-  static const String _defaultTooltip = 'WiFi Monitor';
 
   final Future<void> Function() onOpen;
   final Future<void> Function() onQuit;
@@ -64,8 +63,8 @@ class TrayController with TrayListener {
     // Стартовая иконка — красная (соединение ещё не подтверждено),
     // 1:1 с Python: self.tray.setIcon(self.icon_red).
     await _runLocked(() async {
-      await trayManager.setIcon(_iconRed);
-      await trayManager.setToolTip(_defaultTooltip);
+      await trayManager.setIcon(kTrayIconRed);
+      await trayManager.setToolTip(kTrayDefaultTooltip);
       await trayManager.setContextMenu(_buildMenu());
     });
   }
@@ -90,7 +89,7 @@ class TrayController with TrayListener {
 
     await _runLocked(() async {
       try {
-        await trayManager.setIcon(connected ? _iconGreen : _iconRed);
+        await trayManager.setIcon(connected ? kTrayIconGreen : kTrayIconRed);
         await trayManager.setToolTip(
           connected ? '$ssid — Подключено' : '$ssid — Нет соединения',
         );

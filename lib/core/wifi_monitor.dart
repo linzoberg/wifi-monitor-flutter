@@ -14,19 +14,8 @@ import 'dart:io';
 
 import 'constants.dart';
 import 'models.dart';
+import 'parsers.dart';
 import 'process_runner.dart';
-
-/// SSID:  MyNetwork
-/// (без двоеточия в значении — берём всё до конца строки)
-final RegExp _reSsid =
-    RegExp(r'^\s*SSID\s*:\s*(.+)$', multiLine: true);
-
-/// Признаки «connected» в выводе `netsh wlan show interfaces` —
-/// в разных локалях Windows строка отличается.
-const List<String> _connectedMarkers = <String>[
-  'подключено',
-  'connected',
-];
 
 /// Мониторинг и управление Wi-Fi.
 ///
@@ -101,11 +90,8 @@ class WiFiMonitor {
     }
 
     final output = result.stdout;
-    final match = _reSsid.firstMatch(output);
-    final currentSsid = match?.group(1)?.trim();
-
-    final lower = output.toLowerCase();
-    final isConnected = _connectedMarkers.any(lower.contains);
+    final currentSsid = extractCurrentSsid(output);
+    final isConnected = containsConnectedMarker(output);
 
     connected = currentSsid == ssid && isConnected;
     return connected;
