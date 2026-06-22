@@ -25,12 +25,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
+  // Стартовый размер совпадает с фиксированным размером окна в Dart
+  // (kAppWidth/kAppHeight в lib/ui/styles.dart). window_manager поправит
+  // позицию (центрирование) и видимость уже из Dart.
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
-  if (!window.Create(L"wifi_monitor", origin, size)) {
+  Win32Window::Size size(600, 400);
+  if (!window.Create(L"Wi-Fi \u041C\u043E\u043D\u0438\u0442\u043E\u0440", origin, size)) {
     return EXIT_FAILURE;
   }
-  window.SetQuitOnClose(true);
+  // Не выходим из приложения при закрытии главного окна —
+  // главное окно может быть скрыто в трей (preventClose в Dart).
+  // Реальный выход выполняется через TrayController -> exit(0).
+  window.SetQuitOnClose(false);
 
   ::MSG msg;
   while (::GetMessage(&msg, nullptr, 0, 0)) {

@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────
 // Управление и мониторинг Wi-Fi подключения через netsh (Windows).
-// Аналог core/wifi.py → класс WiFiMonitor.
+// 1:1 порт core/wifi.py:
+//   • check_wifi_available()    — netsh wlan show networks + поиск SSID
+//   • get_current_connection()  — netsh wlan show interfaces + парсинг
+//   • connect_to_wifi()         — delete profile → add profile (XML) → connect
+//   • check_internet()          — TCP-проба роутера, затем 8.8.8.8:53
 //
-// API максимально совпадает с Python-версией:
-//   checkWifiAvailable()    → bool
-//   getCurrentConnection()  → bool
-//   connectToWifi()         → ConnectResult(ok, message)
-//   checkInternet()         → bool
+// Сетевые «магические» числа лежат в constants.dart, чтобы не дублировать.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
@@ -15,56 +15,49 @@ import 'dart:io';
 import 'constants.dart';
 import 'process_runner.dart';
 
-/// Маркеры активного подключения в выводе `netsh wlan show interfaces`.
-/// На разных локалях Windows строка отличается — держим набор.
-const List<String> _kConnectedMarkers = ['подключено', 'connected'];
+/// SSID:  MyNetwork
+/// (без двоеточия в значении — берём всё до конца строки)
+final RegExp _reSsid =
+    RegExp(r'^\s*SSID\s*:\s*(.+)$', multiLine: true);
 
-/// Regex для строки вида:  SSID                   : MyNetwork
-/// Соответствует Python _RE_SSID = r'^\s*SSID\s*:\s*(.+)$'.
-final RegExp _kRegSsid = RegExp(
-  r'^\s*SSID\s*:\s*(.+)$',
-  multiLine: true,
-);
+/// Признаки «connected» в выводе `netsh wlan show interfaces` —
+/// в разных локалях Windows строка отличается.
+const List<String> _connectedMarkers = <String>[
+  'подключено',
+  'connected',
+];
 
-/// Результат одной попытки подключения.
-class ConnectResult {
-  final bool ok;
-  final String message;
-  const ConnectResult(this.ok, this.message);
-}
-
-/// Мониторинг и управление подключением к Wi-Fi.
+/// Мониторинг и управление Wi-Fi.
 ///
-/// Класс хранит сам набор данных (SSID/пароль/IP роутера) и кеширует
-/// последние известные состояния — как и Python-оригинал.
+/// Состояние [connected] / [ssidAvailable] — это снапшот последнего опроса,
+/// как и в Python. UI читает их напрямую при необходимости, но основной поток
+/// данных всё равно идёт через MonitorService → Stream<MonitorEvent>.
 class WiFiMonitor {
   final String ssid;
   final String password;
+  final String routerIp;
 
-  /// IP роутера для проверки локальной сети (можно менять на лету —
-  /// в Python это поле тоже мутабельное).
-  String routerIp;
-
-  /// Кеш: подключены ли мы сейчас к нужной сети.
   bool connected = false;
-
-  /// Кеш: видна ли сеть в эфире.
   bool ssidAvailable = false;
 
   WiFiMonitor({
     required this.ssid,
     required this.password,
     String? routerIp,
-  }) : routerIp = routerIp ?? kDefaultRouterIp;
+  }) : routerIp = (routerIp == null || routerIp.trim().isEmpty)
+            ? kDefaultRouterIp
+            : routerIp.trim();
 
-  // ── Сканирование сетей ───────────────────────
-  /// Проверяет, видна ли указанная сеть в эфире.
+  // ── Сканирование сетей ────────────────────
+
+  /// Возвращает true, если нужный SSID виден в эфире.
+  /// Реализация — как в Python: ищем подстроку в полном выводе netsh.
   Future<bool> checkWifiAvailable() async {
-    HiddenProcessResult result;
+    final HiddenProcessResult result;
     try {
       result = await runHidden(
         'netsh',
-        ['wlan', 'show', 'networks'],
+        const ['wlan', 'show', 'networks'],
         timeout: const Duration(seconds: kNetshTimeoutSec),
       );
     } on TimeoutException {
@@ -74,6 +67,7 @@ class WiFiMonitor {
     }
 
     if (!result.ok || result.stdout.isEmpty) {
+      ssidAvailable = false;
       return false;
     }
 
@@ -81,14 +75,15 @@ class WiFiMonitor {
     return ssidAvailable;
   }
 
-  // ── Текущее подключение ──────────────────────
-  /// Проверяет, что мы реально подключены к нужной сети.
+  // ── Текущее подключение ───────────────────
+
+  /// True если ОС подключена именно к [ssid].
   Future<bool> getCurrentConnection() async {
-    HiddenProcessResult result;
+    final HiddenProcessResult result;
     try {
       result = await runHidden(
         'netsh',
-        ['wlan', 'show', 'interfaces'],
+        const ['wlan', 'show', 'interfaces'],
         timeout: const Duration(seconds: kNetshInterfacesTimeoutSec),
       );
     } on TimeoutException {
@@ -105,18 +100,19 @@ class WiFiMonitor {
     }
 
     final output = result.stdout;
-    final ssidMatch = _kRegSsid.firstMatch(output);
-    final currentSsid = ssidMatch?.group(1)?.trim();
+    final match = _reSsid.firstMatch(output);
+    final currentSsid = match?.group(1)?.trim();
 
-    final outputLower = output.toLowerCase();
-    final isConnected = _kConnectedMarkers.any(outputLower.contains);
+    final lower = output.toLowerCase();
+    final isConnected = _connectedMarkers.any(lower.contains);
 
     connected = currentSsid == ssid && isConnected;
     return connected;
   }
 
-  // ── Подключение к Wi-Fi ──────────────────────
-  /// Сборка XML-профиля WLAN. 1:1 со строкой из Python (_build_profile_xml).
+  // ── Подключение к Wi-Fi ───────────────────
+
+  /// Профиль WPA2-PSK / AES — формат и порядок тегов 1:1 с Python.
   String _buildProfileXml() {
     return '<?xml version="1.0"?>\n'
         '<WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">\n'
@@ -145,39 +141,35 @@ class WiFiMonitor {
         '</WLANProfile>\n';
   }
 
-  /// Одна попытка установить соединение.
-  /// Возвращает `ConnectResult(ok, errorDescription)` — в случае успеха
-  /// `message` пустой, как и в Python.
-  Future<ConnectResult> _tryConnectOnce() async {
+  /// Одна попытка подключения. Возвращает (успех, текст ошибки).
+  Future<(bool, String)> _tryConnectOnce() async {
     File? tempFile;
     try {
-      // 1. Удаляем старый профиль (ошибки игнорируем)
+      // Удаляем старый профиль (ошибки игнорируем — его могло и не быть).
       try {
         await runHidden(
           'netsh',
           ['wlan', 'delete', 'profile', 'name=$ssid'],
           timeout: const Duration(seconds: kNetshTimeoutSec),
         );
-      } catch (_) {
-        // как в Python — пофиг
-      }
+      } catch (_) {/* ok */}
 
-      // 2. Создаём временный XML-файл с профилем
-      final tempDir = Directory.systemTemp;
-      final sep = Platform.pathSeparator;
+      // Временный XML-файл с профилем (UTF-8).
+      final dir = Directory.systemTemp;
       tempFile = await File(
-        '${tempDir.path}${sep}wifi_${DateTime.now().microsecondsSinceEpoch}.xml',
+        '${dir.path}${Platform.pathSeparator}'
+        'wifi_${DateTime.now().microsecondsSinceEpoch}.xml',
       ).create();
-      await tempFile.writeAsString(_buildProfileXml(), flush: true);
+      await tempFile.writeAsString(_buildProfileXml());
 
-      // 3. Добавляем профиль
+      // Добавляем профиль.
       await runHidden(
         'netsh',
         ['wlan', 'add', 'profile', 'filename=${tempFile.path}'],
         timeout: const Duration(seconds: kNetshTimeoutSec),
       );
 
-      // 4. Подключаемся
+      // Подключаемся.
       final connectResult = await runHidden(
         'netsh',
         ['wlan', 'connect', 'name=$ssid'],
@@ -185,84 +177,82 @@ class WiFiMonitor {
       );
 
       if (!connectResult.ok) {
-        return const ConnectResult(false, 'ошибка команды подключения');
+        return (false, 'ошибка команды подключения');
       }
 
-      final connected = await _waitForConnection(
+      final ok = await _waitForConnection(
         timeout: const Duration(seconds: 5),
         poll: const Duration(milliseconds: 500),
       );
-      if (connected) {
-        return const ConnectResult(true, '');
-      }
-      return const ConnectResult(false, 'не удалось установить соединение');
+      if (ok) return (true, '');
+      return (false, 'не удалось установить соединение');
     } on TimeoutException catch (e) {
-      return ConnectResult(false, 'таймаут: ${e.message ?? "истёк"}');
+      return (false, 'ошибка: $e');
     } catch (e) {
-      return ConnectResult(false, 'ошибка: $e');
+      return (false, 'ошибка: $e');
     } finally {
-      // Удаляем временный файл (ошибки удаления игнорируем — как в Python)
       if (tempFile != null) {
         try {
-          if (await tempFile.exists()) {
-            await tempFile.delete();
-          }
-        } catch (_) {/* ignore */}
+          if (await tempFile.exists()) await tempFile.delete();
+        } catch (_) {/* ok */}
       }
     }
   }
 
-  /// Пытается подключиться, с повторами по конфигу.
-  /// Возвращает финальный результат после всех попыток.
-  Future<ConnectResult> connectToWifi() async {
-    String lastError = '';
+  /// Серия попыток подключения с паузами между ними.
+  /// Возвращает (успех, человекочитаемое сообщение).
+  Future<(bool, String)> connectToWifi() async {
+    const maxAttempts = kReconnectAttempts;
+    var lastError = '';
 
-    for (var attempt = 1; attempt <= kReconnectAttempts; attempt++) {
-      final result = await _tryConnectOnce();
-      if (result.ok) {
-        return ConnectResult(true, 'Успешно подключено к $ssid');
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      final (ok, err) = await _tryConnectOnce();
+      if (ok) {
+        return (true, 'Успешно подключено к $ssid');
       }
+      lastError = 'Попытка $attempt/$maxAttempts: $err';
 
-      lastError = 'Попытка $attempt/$kReconnectAttempts: ${result.message}';
-
-      if (attempt < kReconnectAttempts) {
-        await Future<void>.delayed(const Duration(seconds: kReconnectDelay));
+      if (attempt < maxAttempts) {
+        await Future<void>.delayed(
+          const Duration(seconds: kReconnectDelay),
+        );
       }
     }
 
-    return ConnectResult(
+    return (
       false,
-      'Не удалось подключиться после $kReconnectAttempts попыток ($lastError)',
+      'Не удалось подключиться после $maxAttempts попыток ($lastError)',
     );
   }
 
-  /// Активно ждёт подключения вместо фиксированной паузы.
+  /// Активное ожидание установления соединения.
   Future<bool> _waitForConnection({
     required Duration timeout,
     required Duration poll,
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
-      if (await getCurrentConnection()) {
-        return true;
-      }
+      if (await getCurrentConnection()) return true;
       await Future<void>.delayed(poll);
     }
     return false;
   }
 
-  // ── Интернет ─────────────────────────────────
-  /// Доступен ли интернет: пробуем роутер, затем DNS Google.
+  // ── Интернет ──────────────────────────────
+
+  /// Двухступенчатая проверка интернета: роутер (80) → 8.8.8.8 (53).
+  /// Используем TCP-соединение, как socket.create_connection в Python.
   Future<bool> checkInternet() async {
-    final probes = [
-      _Probe(routerIp, 80),
-      const _Probe('8.8.8.8', 53),
+    final probes = <(String, int)>[
+      (routerIp, 80),
+      ('8.8.8.8', 53),
     ];
-    for (final probe in probes) {
+
+    for (final (host, port) in probes) {
       try {
         final socket = await Socket.connect(
-          probe.host,
-          probe.port,
+          host,
+          port,
           timeout: const Duration(seconds: kInternetProbeTimeoutSec),
         );
         socket.destroy();
@@ -273,10 +263,4 @@ class WiFiMonitor {
     }
     return false;
   }
-}
-
-class _Probe {
-  final String host;
-  final int port;
-  const _Probe(this.host, this.port);
 }

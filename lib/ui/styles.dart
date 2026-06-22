@@ -1,0 +1,194 @@
+// ─────────────────────────────────────────────
+// Стили UI и константы окна.
+//
+// Аналог ui/styles.py — те же цвета, шрифты и размеры, но в терминах
+// Flutter (Color/TextStyle/ButtonStyle), чтобы дизайн остался 1:1.
+//
+// Палитра (HEX → название):
+//   #2c3e50 — тёмно-серо-синий, заголовок
+//   #7f8c8d — серый, второстепенный текст / "нейтральная" статусная строка
+//   #ecf0f1 — почти белый, фон ping-плашки и текстового лога
+//   #bdc3c7 — серая рамка ping-плашки / лога / разделителя
+//   #2ecc71 / #27ae60 — зелёный "запуск" / hover (онлайн)
+//   #e74c3c / #c0392b — красный "стоп" / hover (нет сети)
+//   #3498db / #2980b9 — синий "очистить лог"
+//   #95a5a6 / #7f8c8d — серый "настройки"
+//   #f39c12          — оранжевый (VPN / средний пинг)
+// ─────────────────────────────────────────────
+
+import 'package:flutter/material.dart';
+
+// ── Окно ────────────────────────────────────
+const String kAppTitle = 'Wi-Fi Монитор';
+const double kAppWidth = 600;
+const double kAppHeight = 400;
+
+// ── Палитра ─────────────────────────────────
+class AppColors {
+  AppColors._();
+
+  // Текст
+  static const Color titleDark = Color(0xFF2C3E50);
+  static const Color textMuted = Color(0xFF7F8C8D);
+  static const Color borderLight = Color(0xFFBDC3C7);
+  static const Color surfaceLight = Color(0xFFECF0F1);
+
+  // Кнопки
+  static const Color greenBg = Color(0xFF2ECC71);
+  static const Color greenBgHover = Color(0xFF27AE60);
+
+  static const Color redBg = Color(0xFFE74C3C);
+  static const Color redBgHover = Color(0xFFC0392B);
+
+  static const Color blueBg = Color(0xFF3498DB);
+  static const Color blueBgHover = Color(0xFF2980B9);
+
+  static const Color grayBg = Color(0xFF95A5A6);
+  static const Color grayBgHover = Color(0xFF7F8C8D);
+
+  // Статусы
+  static const Color statusOk = Color(0xFF27AE60);
+  static const Color statusError = Color(0xFFE74C3C);
+  static const Color statusWarn = Color(0xFFF39C12);
+}
+
+// ── Шрифты ──────────────────────────────────
+const String kFontUi = 'Arial';
+const String kFontMono = 'Consolas';
+
+const TextStyle kTitleStyle = TextStyle(
+  fontFamily: kFontUi,
+  fontSize: 16,
+  fontWeight: FontWeight.bold,
+  color: AppColors.titleDark,
+);
+
+const TextStyle kInfoStyle = TextStyle(
+  fontFamily: kFontUi,
+  fontSize: 10,
+  color: AppColors.textMuted,
+);
+
+const TextStyle kPingTitleStyle = TextStyle(
+  fontFamily: kFontUi,
+  fontSize: 9,
+  color: AppColors.textMuted,
+);
+
+const TextStyle kPingValueBaseStyle = TextStyle(
+  fontFamily: kFontUi,
+  fontSize: 9,
+  fontWeight: FontWeight.bold,
+);
+
+const TextStyle kLogStyle = TextStyle(
+  fontFamily: kFontMono,
+  fontSize: 9,
+  color: AppColors.titleDark,
+);
+
+const TextStyle kBottomStatusBaseStyle = TextStyle(
+  fontFamily: kFontUi,
+  fontSize: 9,
+);
+
+const TextStyle kHintStyle = TextStyle(
+  color: AppColors.textMuted,
+  fontSize: 11,
+);
+
+// ── Декорации ───────────────────────────────
+
+/// Контейнер ping-плашки (фон + рамка + скругление) —
+/// аналог STYLE_PING_FRAME из Python.
+BoxDecoration kPingFrameDecoration() => BoxDecoration(
+      color: AppColors.surfaceLight,
+      border: Border.all(color: AppColors.borderLight),
+      borderRadius: BorderRadius.circular(5),
+    );
+
+/// Контейнер для лога (тот же фон/рамка/скругление, но без padding —
+/// padding задаётся внутренним SingleChildScrollView/TextField).
+BoxDecoration kLogDecoration() => BoxDecoration(
+      color: AppColors.surfaceLight,
+      border: Border.all(color: AppColors.borderLight),
+      borderRadius: BorderRadius.circular(5),
+    );
+
+/// Горизонтальный разделитель (1px полоска цвета #bdc3c7).
+Widget kSeparator() => Container(
+      height: 1,
+      color: AppColors.borderLight,
+    );
+
+// ── Кнопки ──────────────────────────────────
+
+/// Стиль кнопки 1:1 с button_style() из Python:
+///   bold-белый текст, padding 8x16, border-radius 4, цвет + hover.
+ButtonStyle appButtonStyle({
+  required Color background,
+  required Color backgroundHover,
+}) {
+  return ButtonStyle(
+    foregroundColor: WidgetStateProperty.all(Colors.white),
+    elevation: WidgetStateProperty.all(0),
+    padding: WidgetStateProperty.all(
+      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    ),
+    shape: WidgetStateProperty.all(
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+    ),
+    textStyle: WidgetStateProperty.all(
+      const TextStyle(fontWeight: FontWeight.bold),
+    ),
+    backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
+      if (states.contains(WidgetState.disabled)) {
+        // Полупрозрачный, чтобы было видно "отключённое" состояние.
+        return background.withValues(alpha: 0.5);
+      }
+      if (states.contains(WidgetState.hovered) ||
+          states.contains(WidgetState.pressed) ||
+          states.contains(WidgetState.focused)) {
+        return backgroundHover;
+      }
+      return background;
+    }),
+  );
+}
+
+ButtonStyle get kButtonStart =>
+    appButtonStyle(background: AppColors.greenBg, backgroundHover: AppColors.greenBgHover);
+
+ButtonStyle get kButtonStop =>
+    appButtonStyle(background: AppColors.redBg, backgroundHover: AppColors.redBgHover);
+
+ButtonStyle get kButtonClear =>
+    appButtonStyle(background: AppColors.blueBg, backgroundHover: AppColors.blueBgHover);
+
+ButtonStyle get kButtonSettings =>
+    appButtonStyle(background: AppColors.grayBg, backgroundHover: AppColors.grayBgHover);
+
+// ── Тема ────────────────────────────────────
+
+/// Светлая Fusion-подобная тема, чтобы соответствовать
+/// `app.setStyle("Fusion")` из Python и не "уплывать" в Material 3 палитру.
+ThemeData buildAppTheme() {
+  return ThemeData(
+    useMaterial3: false,
+    fontFamily: kFontUi,
+    scaffoldBackgroundColor: Colors.white,
+    dialogTheme: const DialogThemeData(backgroundColor: Colors.white),
+    colorScheme: const ColorScheme.light(
+      primary: AppColors.titleDark,
+      secondary: AppColors.blueBg,
+      surface: Colors.white,
+    ),
+    textTheme: const TextTheme(
+      bodyMedium: TextStyle(fontFamily: kFontUi, color: AppColors.titleDark),
+    ),
+    inputDecorationTheme: const InputDecorationTheme(
+      isDense: true,
+      border: OutlineInputBorder(),
+    ),
+  );
+}

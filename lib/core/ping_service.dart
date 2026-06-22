@@ -1,20 +1,10 @@
 // ─────────────────────────────────────────────
-// Сервис пинга 8.8.8.8.
+// Периодический пинг 8.8.8.8 с детектом VPN.
+// 1:1 порт PingThread из core/workers.py.
 //
-// Аналог core/workers.py → PingThread.
-// Вместо QThread + pyqtSignal используем Stream<PingResult> +
-// внутренний цикл с прерываемой задержкой (флаг + Future.delayed).
-//
-// Жизненный цикл:
-//   final svc = PingService(pingIntervalSec: 5);
-//   svc.results.listen((r) { ... });
-//   svc.start();
-//   ...
-//   await svc.stop();
-//   svc.dispose();
-//
-// Интервал можно поменять через restartWith(newInterval) — поведение
-// идентично Python (там перезапускали поток с новым параметром).
+// Выход: Stream<PingResult> (broadcast) — UI и трей подписываются на одно и то же.
+// Управление: start() / stop(). Прерываемый sleep реализован через Completer,
+// поэтому stop() не ждёт окончания текущего интервала.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
@@ -23,128 +13,150 @@ import 'constants.dart';
 import 'models.dart';
 import 'process_runner.dart';
 
-/// Прекомпилированные regex для разбора вывода ping.
-/// Поддерживают и русский ("Время = 42мс"), и английский ("time=42ms").
-final RegExp _kRegPingTime = RegExp(
-  r'(?:[Вв]ремя|[Tt]ime)\s*[=<]\s*(\d+)',
-);
-final RegExp _kRegPingLt1 = RegExp(
-  r'(?:[Вв]ремя|[Tt]ime)\s*<\s*1',
-);
+/// Время в выводе ping:
+///   • Windows ru-RU: "время=42мс" / "время<1мс"
+///   • Windows en:    "time=42ms"  / "time<1ms"
+final RegExp _rePingTime =
+    RegExp(r'(?:[Вв]ремя|[Tt]ime)\s*[=<]\s*(\d+)');
+
+final RegExp _rePingLt1 =
+    RegExp(r'(?:[Вв]ремя|[Tt]ime)\s*<\s*1');
 
 class PingService {
-  /// Интервал между пингами в секундах.
-  int _pingIntervalSec;
+  final int pingIntervalSec;
 
-  final _controller = StreamController<PingResult>.broadcast();
+  final StreamController<PingResult> _controller =
+      StreamController<PingResult>.broadcast();
+
+  /// Активный «sleep» — резолвится в null при штатном пробуждении
+  /// и в [_StopSignal] при stop(), чтобы выйти из цикла досрочно.
+  Completer<void>? _sleepCompleter;
+
   bool _running = false;
-  Completer<void>? _runCompleter;
 
-  PingService({int pingIntervalSec = kDefaultPingInterval})
-      : _pingIntervalSec = pingIntervalSec < 1 ? 1 : pingIntervalSec;
+  PingService({required int pingIntervalSec})
+      : pingIntervalSec =
+            pingIntervalSec < 1 ? 1 : pingIntervalSec;
 
-  /// Stream результатов пинга. Можно подписываться неограниченно — broadcast.
+  /// Поток результатов пинга. Можно подписываться многократно.
   Stream<PingResult> get results => _controller.stream;
 
-  /// Запустить цикл пинга. Если уже запущен — no-op.
+  bool get isRunning => _running;
+
+  /// Запускает фоновый цикл. Повторный вызов — игнорируется.
   void start() {
     if (_running) return;
     _running = true;
-    _runCompleter = Completer<void>();
+    // Не await — пусть крутится в фоне.
     unawaited(_loop());
   }
 
-  /// Остановить цикл и дождаться, пока текущая итерация завершится.
+  /// Останавливает фоновый цикл и будит спящий sleep().
   Future<void> stop() async {
     if (!_running) return;
     _running = false;
-    final completer = _runCompleter;
-    _runCompleter = null;
-    if (completer != null) {
-      await completer.future;
-    }
+    _wakeSleep();
   }
 
-  /// Закрыть Stream. После dispose() сервис уже не использовать.
+  /// Закрывает stream. После dispose() сервис больше не использовать.
   Future<void> dispose() async {
     await stop();
     await _controller.close();
   }
 
-  /// Удобный шорткат: остановить, поменять интервал, снова запустить.
-  Future<void> restartWith(int pingIntervalSec) async {
-    await stop();
-    _pingIntervalSec = pingIntervalSec < 1 ? 1 : pingIntervalSec;
-    start();
-  }
-
-  // ── Внутреннее ───────────────────────────────
+  // ── Внутренний цикл ──────────────────────
 
   Future<void> _loop() async {
-    try {
-      // Начальная задержка (как INITIAL_DELAY_MS в Python).
-      if (!await _sleepInterruptible(
-        const Duration(milliseconds: kPingInitialDelayMs),
+    // Стартовая задержка — как INITIAL_DELAY_MS в Python.
+    if (!await _interruptibleSleep(
+      const Duration(milliseconds: kPingInitialDelayMs),
+    )) {
+      return;
+    }
+
+    final cmd = <String>['-n', '1', '-w', '2000', kPingHost];
+
+    while (_running) {
+      final ms = await _ping(cmd);
+
+      if (!_running) return;
+
+      if (ms == null) {
+        _emit(const PingUnreachable());
+      } else if (ms <= 1) {
+        // время < 1 мс — характерный признак VPN/локального туннеля.
+        _emit(const PingVpn());
+      } else {
+        _emit(PingOk(ms));
+      }
+
+      if (!await _interruptibleSleep(
+        Duration(seconds: pingIntervalSec),
       )) {
         return;
       }
-
-      while (_running) {
-        final result = await _pingOnce();
-        if (!_running) return;
-        _controller.add(result);
-
-        if (!await _sleepInterruptible(Duration(seconds: _pingIntervalSec))) {
-          return;
-        }
-      }
-    } finally {
-      _runCompleter?.complete();
     }
   }
 
-  /// Один пинг → PingResult.
-  Future<PingResult> _pingOnce() async {
-    HiddenProcessResult result;
+  void _emit(PingResult r) {
+    if (_controller.isClosed) return;
+    _controller.add(r);
+  }
+
+  /// Один вызов ping. Возвращает миллисекунды или null при ошибке.
+  Future<int?> _ping(List<String> args) async {
+    final HiddenProcessResult result;
     try {
       result = await runHidden(
         'ping',
-        ['-n', '1', '-w', '2000', kPingHost],
+        args,
         timeout: const Duration(seconds: 5),
       );
     } on TimeoutException {
-      return const PingUnreachable();
+      return null;
     } catch (_) {
-      return const PingUnreachable();
+      return null;
     }
 
     final output = result.stdout;
-    final match = _kRegPingTime.firstMatch(output);
-    if (match != null) {
-      final ms = int.parse(match.group(1)!);
-      // Время < 1 мс по основному regex (формат "Время=0мс") тоже считаем VPN.
-      if (ms <= 1) return const PingVpn();
-      return PingOk(ms);
+    if (output.isEmpty) {
+      return result.ok && _rePingLt1.hasMatch(result.stderr) ? 1 : null;
     }
 
-    // Формат "Время < 1мс" — успешный, но без числа. Это признак VPN.
-    if (result.ok && _kRegPingLt1.hasMatch(output)) {
-      return const PingVpn();
+    final m = _rePingTime.firstMatch(output);
+    if (m != null) {
+      return int.tryParse(m.group(1)!);
     }
-    return const PingUnreachable();
+
+    if (result.ok && _rePingLt1.hasMatch(output)) return 1;
+    return null;
   }
 
-  /// Спит [duration], но просыпается, если выставлен флаг остановки.
-  /// Возвращает false, если был остановлен.
-  Future<bool> _sleepInterruptible(Duration duration) async {
-    final deadline = DateTime.now().add(duration);
-    const tick = Duration(milliseconds: 100);
-    while (_running && DateTime.now().isBefore(deadline)) {
-      final remaining = deadline.difference(DateTime.now());
-      final step = remaining < tick ? remaining : tick;
-      if (step.inMicroseconds <= 0) break;
-      await Future<void>.delayed(step);
+  // ── Прерываемый sleep ────────────────────
+
+  /// Возвращает true если проснулись штатно по таймеру, false если разбудил stop().
+  Future<bool> _interruptibleSleep(Duration d) async {
+    if (!_running) return false;
+    final completer = Completer<void>();
+    _sleepCompleter = completer;
+
+    final timer = Timer(d, () {
+      if (!completer.isCompleted) completer.complete();
+    });
+
+    try {
+      await completer.future;
+    } finally {
+      timer.cancel();
+      if (identical(_sleepCompleter, completer)) {
+        _sleepCompleter = null;
+      }
     }
     return _running;
+  }
+
+  void _wakeSleep() {
+    final c = _sleepCompleter;
+    if (c != null && !c.isCompleted) c.complete();
   }
 }
