@@ -1,0 +1,36 @@
+name: wifi_monitor
+description: "Wi-Fi Монитор — слежение за подключением к выбранной сети (Windows)."
+publish_to: 'none'
+version: 0.3.5+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Системный трей: иконка + меню + двойной клик
+  tray_manager: ^0.2.3
+
+  # Управление окном: фиксированный размер, скрытие при закрытии, preventClose
+  window_manager: ^0.3.9
+
+  # Хранение пароля в Windows Credential Manager (DPAPI под капотом)
+  flutter_secure_storage: ^9.2.2
+
+  # Чтение/запись HKCU\...\Run для автозапуска
+  win32_registry: ^1.1.4
+
+  # Путь к %APPDATA% для JSON-настроек
+  path_provider: ^2.1.4
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/tray_green.png
+    - assets/tray_red.png
