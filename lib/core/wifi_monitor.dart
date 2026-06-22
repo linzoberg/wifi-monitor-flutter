@@ -13,6 +13,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'constants.dart';
+import 'models.dart';
 import 'process_runner.dart';
 
 /// SSID:  MyNetwork
@@ -142,7 +143,7 @@ class WiFiMonitor {
   }
 
   /// Одна попытка подключения. Возвращает (успех, текст ошибки).
-  Future<(bool, String)> _tryConnectOnce() async {
+  Future<({bool ok, String error})> _tryConnectOnce() async {
     File? tempFile;
     try {
       // Удаляем старый профиль (ошибки игнорируем — его могло и не быть).
@@ -177,19 +178,19 @@ class WiFiMonitor {
       );
 
       if (!connectResult.ok) {
-        return (false, 'ошибка команды подключения');
+        return (ok: false, error: 'ошибка команды подключения');
       }
 
       final ok = await _waitForConnection(
         timeout: const Duration(seconds: 5),
         poll: const Duration(milliseconds: 500),
       );
-      if (ok) return (true, '');
-      return (false, 'не удалось установить соединение');
+      if (ok) return (ok: true, error: '');
+      return (ok: false, error: 'не удалось установить соединение');
     } on TimeoutException catch (e) {
-      return (false, 'ошибка: $e');
+      return (ok: false, error: 'ошибка: $e');
     } catch (e) {
-      return (false, 'ошибка: $e');
+      return (ok: false, error: 'ошибка: $e');
     } finally {
       if (tempFile != null) {
         try {
@@ -200,17 +201,24 @@ class WiFiMonitor {
   }
 
   /// Серия попыток подключения с паузами между ними.
-  /// Возвращает (успех, человекочитаемое сообщение).
-  Future<(bool, String)> connectToWifi() async {
+  /// Возвращает структуру с финальным результатом — UI/Monitor строит
+  /// нужный статус сам, без обратного парсинга строки.
+  Future<ConnectAttemptOutcome> connectToWifi() async {
     const maxAttempts = kReconnectAttempts;
     var lastError = '';
+    var lastAttempt = 0;
 
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
-      final (ok, err) = await _tryConnectOnce();
-      if (ok) {
-        return (true, 'Успешно подключено к $ssid');
+      lastAttempt = attempt;
+      final result = await _tryConnectOnce();
+      if (result.ok) {
+        return ConnectAttemptOutcome(
+          success: true,
+          attempts: attempt,
+          lastError: '',
+        );
       }
-      lastError = 'Попытка $attempt/$maxAttempts: $err';
+      lastError = result.error;
 
       if (attempt < maxAttempts) {
         await Future<void>.delayed(
@@ -219,9 +227,10 @@ class WiFiMonitor {
       }
     }
 
-    return (
-      false,
-      'Не удалось подключиться после $maxAttempts попыток ($lastError)',
+    return ConnectAttemptOutcome(
+      success: false,
+      attempts: lastAttempt,
+      lastError: lastError,
     );
   }
 

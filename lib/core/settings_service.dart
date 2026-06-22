@@ -55,6 +55,9 @@ class SettingsService {
   final Directory? _overrideDir;
 
   /// Сериализуем файловые операции, чтобы не было гонки чтение/запись.
+  /// Обновляем цепочку, но делаем это через .catchError(_) — чтобы ошибка в одной
+  /// задаче не ломала все последующие, а прокидывалась именно
+  /// вызвавшему.
   Future<void> _ioLock = Future<void>.value();
 
   SettingsService({
@@ -222,17 +225,17 @@ class SettingsService {
     }
   }
 
-  /// Последовательное выполнение I/O-операций.
+  /// Последовательное выполнение I/O-операций. Ошибка в action доходит до вызывающего,
+  /// но не ломает цепочку для следующих вызовов.
   Future<T> _runLocked<T>(Future<T> Function() action) {
-    final completer = Completer<T>();
-    _ioLock = _ioLock.then((_) async {
-      try {
-        completer.complete(await action());
-      } catch (e, st) {
-        completer.completeError(e, st);
-      }
-    });
-    return completer.future;
+    final next = _ioLock.then((_) => action());
+    // Свапаем цепочку всегда, даже если next упадёт (поглощаем ошибку
+    // прямо в _ioLock, чтобы следующий .then() не подхватывал чужой fail).
+    _ioLock = next.then<void>(
+      (_) {},
+      onError: (Object _) {},
+    );
+    return next;
   }
 
   // ── Хелперы для парсинга JSON ───────────────

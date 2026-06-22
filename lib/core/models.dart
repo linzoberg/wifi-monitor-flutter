@@ -101,6 +101,11 @@ class Prefs {
   }
 }
 
+/// Семантический уровень статуса — для UI (цвет/жирность) и трея.
+/// Один enum используется и для MonitorStatus, и для PingResult,
+/// чтобы маппинг «severity → цвет» был ровно один.
+enum StatusSeverity { neutral, ok, warn, error }
+
 /// Результат одного «такта» пинг-треда.
 ///
 /// В Python это была строка вида "Ping 8.8.8.8: 42 мс" / "VPN is ON" /
@@ -108,22 +113,50 @@ class Prefs {
 /// тип, чтобы избежать обратного парсинга.
 sealed class PingResult {
   const PingResult();
+
+  /// Текст для ping-плашки.
+  String get label;
+
+  /// Семантика для расцветки.
+  StatusSeverity get severity;
 }
 
 /// Обычный ответ за `latencyMs` миллисекунд.
 class PingOk extends PingResult {
   final int latencyMs;
   const PingOk(this.latencyMs);
+
+  @override
+  String get label => '$latencyMs мс';
+
+  @override
+  StatusSeverity get severity {
+    if (latencyMs < 80) return StatusSeverity.ok;
+    if (latencyMs < 200) return StatusSeverity.warn;
+    return StatusSeverity.error;
+  }
 }
 
 /// Подозрение на VPN: ответ пришёл быстрее 1 мс.
 class PingVpn extends PingResult {
   const PingVpn();
+
+  @override
+  String get label => 'VPN is ON';
+
+  @override
+  StatusSeverity get severity => StatusSeverity.warn;
 }
 
 /// Хост недоступен / таймаут / ошибка.
 class PingUnreachable extends PingResult {
   const PingUnreachable();
+
+  @override
+  String get label => 'Недоступен';
+
+  @override
+  StatusSeverity get severity => StatusSeverity.error;
 }
 
 /// Состояние подключения, которое отдаёт MonitorService в UI.
@@ -132,6 +165,9 @@ sealed class MonitorStatus {
 
   /// Является ли это «успешным подключением» — нужно для цвета иконки трея.
   bool get isConnected => false;
+
+  /// Семантика для расцветки нижней статусной строки.
+  StatusSeverity get severity => StatusSeverity.neutral;
 
   /// Текстовое сообщение для лога/статусной строки.
   String message(String ssid);
@@ -145,6 +181,9 @@ class StatusConnectedOnline extends MonitorStatus {
   bool get isConnected => true;
 
   @override
+  StatusSeverity get severity => StatusSeverity.ok;
+
+  @override
   String message(String ssid) => 'Подключено к $ssid, интернет доступен';
 }
 
@@ -156,12 +195,18 @@ class StatusConnectedOffline extends MonitorStatus {
   bool get isConnected => true;
 
   @override
+  StatusSeverity get severity => StatusSeverity.error;
+
+  @override
   String message(String ssid) => 'Подключено к $ssid, но нет интернета';
 }
 
 /// Сеть не обнаружена в эфире.
 class StatusNetworkMissing extends MonitorStatus {
   const StatusNetworkMissing();
+
+  @override
+  StatusSeverity get severity => StatusSeverity.error;
 
   @override
   String message(String ssid) => 'Сеть $ssid не обнаружена';
@@ -183,6 +228,9 @@ class StatusConnectSuccess extends MonitorStatus {
   bool get isConnected => true;
 
   @override
+  StatusSeverity get severity => StatusSeverity.ok;
+
+  @override
   String message(String ssid) => 'Успешно подключено к $ssid';
 }
 
@@ -197,6 +245,9 @@ class StatusConnectFailed extends MonitorStatus {
   });
 
   @override
+  StatusSeverity get severity => StatusSeverity.error;
+
+  @override
   String message(String ssid) =>
       'Не удалось подключиться после $attempts попыток ($lastError)';
 }
@@ -205,6 +256,9 @@ class StatusConnectFailed extends MonitorStatus {
 class StatusError extends MonitorStatus {
   final String error;
   const StatusError(this.error);
+
+  @override
+  StatusSeverity get severity => StatusSeverity.error;
 
   @override
   String message(String ssid) => 'Ошибка мониторинга: $error';
@@ -222,6 +276,22 @@ class StatusInfo extends MonitorStatus {
 
   @override
   String message(String ssid) => text;
+}
+
+/// Структурированный результат серии попыток подключения.
+/// Заменяет «(bool, форматированная строка)» из старого API:
+/// MonitorService теперь строит StatusConnectSuccess/Failed напрямую,
+/// без обратного regex-парсинга русского текста.
+class ConnectAttemptOutcome {
+  final bool success;
+  final int attempts;
+  final String lastError;
+
+  const ConnectAttemptOutcome({
+    required this.success,
+    required this.attempts,
+    required this.lastError,
+  });
 }
 
 /// Пакет, который MonitorService шлёт в UI:

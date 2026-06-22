@@ -177,6 +177,46 @@ ButtonStyle get kButtonClear =>
 ButtonStyle get kButtonSettings =>
     appButtonStyle(background: AppColors.grayBg, backgroundHover: AppColors.grayBgHover);
 
+// ── Строка формы (Qt-подобный QFormLayout) ──────
+
+/// Общая вёрстка строки в диалогах настроек / учётных данных.
+/// Раньше жила в двух файлах почти буква-в-букву.
+class AppFormRow extends StatelessWidget {
+  final String label;
+  final Widget field;
+
+  /// Ширина левой колонки с подписью. Совпадает с ранее использовавшимися
+  /// 110 (credentials) / 170 (prefs) — по умолчанию 110.
+  final double labelWidth;
+
+  const AppFormRow({
+    super.key,
+    required this.label,
+    required this.field,
+    this.labelWidth = 110,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: labelWidth,
+            child: Text(
+              label,
+              style: const TextStyle(color: AppColors.titleDark),
+            ),
+          ),
+          Expanded(child: field),
+        ],
+      ),
+    );
+  }
+}
+
 // ── Тема ────────────────────────────────────
 
 /// Светлая Fusion-подобная тема, чтобы соответствовать

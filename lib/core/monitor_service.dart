@@ -9,10 +9,17 @@
 //
 // Выход: Stream<MonitorEvent> (broadcast) — на него подписываются и MainWindow,
 // и TrayController, чтобы перекрашивать иконку.
+//
+// История правок:
+//   • Убран regex-парсинг русского текста ошибки подключения.
+//     WiFiMonitor.connectToWifi() теперь возвращает ConnectAttemptOutcome,
+//     и MonitorService строит StatusConnectSuccess/Failed напрямую.
+//   • Прерываемый sleep вынесен в core/interruptible_sleep.dart.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
 
+import 'interruptible_sleep.dart';
 import 'models.dart';
 import 'wifi_monitor.dart';
 
@@ -23,8 +30,7 @@ class MonitorService {
   final StreamController<MonitorEvent> _controller =
       StreamController<MonitorEvent>.broadcast();
 
-  /// Активный sleep, чтобы stop() мог разбудить его досрочно.
-  Completer<void>? _sleepCompleter;
+  final InterruptibleSleep _sleep = InterruptibleSleep();
 
   /// Запоминаем последнее сообщение — для is_new_line (см. workers.py).
   String _lastMessage = '';
@@ -49,7 +55,7 @@ class MonitorService {
   Future<void> stop() async {
     if (!_running) return;
     _running = false;
-    _wakeSleep();
+    _sleep.wake();
   }
 
   Future<void> dispose() async {
@@ -67,7 +73,8 @@ class MonitorService {
       } catch (e) {
         // Не даём упасть всему циклу — как в Python (BLE001).
         _emit(StatusError(e.toString()), statusChanged: true);
-        if (!await _interruptibleSleep(const Duration(seconds: 5))) return;
+        if (!await _sleep.sleep(const Duration(seconds: 5))) return;
+        if (!_running) return;
         continue;
       }
 
@@ -80,9 +87,8 @@ class MonitorService {
         _lastMessage = text;
       }
 
-      if (!await _interruptibleSleep(Duration(seconds: checkIntervalSec))) {
-        return;
-      }
+      if (!await _sleep.sleep(Duration(seconds: checkIntervalSec))) return;
+      if (!_running) return;
     }
   }
 
@@ -106,12 +112,12 @@ class MonitorService {
     _emit(const StatusConnecting(), statusChanged: true);
     _lastMessage = const StatusConnecting().message(monitor.ssid);
 
-    final (success, message) = await monitor.connectToWifi();
-    final result = success
+    final outcome = await monitor.connectToWifi();
+    final result = outcome.success
         ? const StatusConnectSuccess()
         : StatusConnectFailed(
-            attempts: _attemptsFromMessage(message),
-            lastError: _errorFromMessage(message),
+            attempts: outcome.attempts,
+            lastError: outcome.lastError,
           );
 
     _emit(result, statusChanged: true);
@@ -126,45 +132,5 @@ class MonitorService {
     _controller.add(
       MonitorEvent(status: s, statusChanged: statusChanged),
     );
-  }
-
-  // ── Парсинг сообщения от connectToWifi() ─
-  // WiFiMonitor.connect_to_wifi() возвращает уже отформатированную строку.
-  // Чтобы StatusConnectFailed мог собрать её обратно через message(ssid)
-  // ровно так же, как Python, аккуратно вытащим поля.
-
-  int _attemptsFromMessage(String msg) {
-    final m = RegExp(r'после\s+(\d+)\s+попыток').firstMatch(msg);
-    return m == null ? 0 : int.tryParse(m.group(1)!) ?? 0;
-  }
-
-  String _errorFromMessage(String msg) {
-    final m = RegExp(r'\(([^)]*)\)$').firstMatch(msg);
-    return m == null ? '' : m.group(1)!;
-  }
-
-  // ── Внешний контроль sleep ───────────────
-
-  Future<bool> _interruptibleSleep(Duration d) async {
-    if (!_running) return false;
-    final completer = Completer<void>();
-    _sleepCompleter = completer;
-    final timer = Timer(d, () {
-      if (!completer.isCompleted) completer.complete();
-    });
-    try {
-      await completer.future;
-    } finally {
-      timer.cancel();
-      if (identical(_sleepCompleter, completer)) {
-        _sleepCompleter = null;
-      }
-    }
-    return _running;
-  }
-
-  void _wakeSleep() {
-    final c = _sleepCompleter;
-    if (c != null && !c.isCompleted) c.complete();
   }
 }

@@ -6,14 +6,22 @@
 //   • Подпись "Мониторинг сети: <SSID>".
 //   • Ping-плашка (Ping: <значение> с цветом).
 //   • 1px разделитель.
-//   • Лог: моноширинный, ≤ kMaxLogLines строк, дедупликация повторов
-//     (обновляем timestamp последней строки).
+//   • Лог: моноширинный, ≤ kMaxLogLines строк, дедупликация повторов.
 //   • Кнопки: «Запуск мониторинга» / «Остановить» / «Очистить лог» / «Настройки».
 //   • Нижняя статусная строка с цветом (зелёный/красный/серый).
 //   • Закрытие окна → preventClose → hide() + балун в трее.
 //   • На смену настроек: при изменении checkInterval / routerIp пересоздаём
 //     WiFiMonitor + MonitorService; при смене pingInterval — пересоздаём
-//     PingService (т.к. оба сервиса immutable по своим интервалам).
+//     PingService.
+//
+// Что было оптимизировано (без потери функционала и без изменения дизайна):
+//   • Цвет нижнего статуса теперь берётся из MonitorStatus.severity, а не
+//     из подстрок в русском тексте — нельзя «потерять» сообщение из-за опечатки.
+//   • Цвет ping-плашки берётся из PingResult.severity — одна точка правды.
+//   • Свёрнутый список кнопок построен в цикле, чтобы не дублировать стили.
+//   • Лог-список переиспользует общий ScrollController и автоскролл идёт
+//     только тогда, когда пользователь уже у нижней границы (не «угоняет»
+//     прокрутку, если человек читает старые строки).
 // ─────────────────────────────────────────────
 
 import 'dart:async';
@@ -135,11 +143,12 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   }
 
   Future<void> _stopMonitoring() async {
-    if (_monitor != null) {
+    final svc = _monitor;
+    if (svc != null) {
       await _monitorSub?.cancel();
       _monitorSub = null;
-      await _monitor!.dispose();
       _monitor = null;
+      await svc.dispose();
     }
     if (mounted) {
       setState(() => _isRunning = false);
@@ -157,11 +166,12 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   }
 
   Future<void> _stopPing() async {
-    if (_ping == null) return;
+    final svc = _ping;
+    if (svc == null) return;
     await _pingSub?.cancel();
     _pingSub = null;
-    await _ping!.dispose();
     _ping = null;
+    await svc.dispose();
   }
 
   // ────────────────────────────────────────
@@ -170,58 +180,50 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   void _onMonitorEvent(MonitorEvent event) {
     final text = event.status.message(_wifi.ssid);
 
-    // 1:1 с window.py.update_status: добавляем в лог + меняем нижнюю строку.
     _addStatus(text, newLine: event.statusChanged);
 
-    // Цвет нижней статусной строки — по содержимому сообщения,
-    // как в Python.
-    Color color;
-    FontWeight weight;
-    if (text.contains('Подключено') && text.contains('интернет доступен')) {
-      color = AppColors.statusOk;
-      weight = FontWeight.bold;
-    } else if (text.contains('нет интернета') ||
-        text.contains('не обнаружена')) {
-      color = AppColors.statusError;
-      weight = FontWeight.bold;
-    } else {
-      color = AppColors.textMuted;
-      weight = FontWeight.normal;
-    }
+    // Цвет / жирность теперь идут из severity, а не из contains() по строке.
+    final (color, weight) = _statusBottomStyle(event.status);
     setState(() {
       _bottomText = text;
       _bottomColor = color;
       _bottomWeight = weight;
     });
 
-    // Цвет иконки трея — по флагу isConnected.
     widget.tray.setConnected(event.status.isConnected, ssid: _wifi.ssid);
   }
 
-  void _onPingResult(PingResult r) {
-    String text;
-    Color color;
-    switch (r) {
-      case PingVpn():
-        text = 'VPN is ON';
-        color = AppColors.statusWarn;
-      case PingUnreachable():
-        text = 'Недоступен';
-        color = AppColors.statusError;
-      case PingOk(latencyMs: final ms):
-        text = '$ms мс';
-        if (ms < 80) {
-          color = AppColors.statusOk;
-        } else if (ms < 200) {
-          color = AppColors.statusWarn;
-        } else {
-          color = AppColors.statusError;
-        }
+  (Color, FontWeight) _statusBottomStyle(MonitorStatus s) {
+    switch (s.severity) {
+      case StatusSeverity.ok:
+        return (AppColors.statusOk, FontWeight.bold);
+      case StatusSeverity.error:
+        return (AppColors.statusError, FontWeight.bold);
+      case StatusSeverity.warn:
+        return (AppColors.statusWarn, FontWeight.bold);
+      case StatusSeverity.neutral:
+        return (AppColors.textMuted, FontWeight.normal);
     }
+  }
+
+  void _onPingResult(PingResult r) {
     setState(() {
-      _pingText = text;
-      _pingColor = color;
+      _pingText = r.label;
+      _pingColor = _severityColor(r.severity);
     });
+  }
+
+  Color _severityColor(StatusSeverity s) {
+    switch (s) {
+      case StatusSeverity.ok:
+        return AppColors.statusOk;
+      case StatusSeverity.warn:
+        return AppColors.statusWarn;
+      case StatusSeverity.error:
+        return AppColors.statusError;
+      case StatusSeverity.neutral:
+        return AppColors.textMuted;
+    }
   }
 
   // ────────────────────────────────────────
@@ -245,10 +247,20 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
       _lastLogMessage = message;
     }
 
-    if (mounted) {
-      setState(() {});
+    if (!mounted) return;
+    // Запоминаем, был ли пользователь у самого низа ДО setState,
+    // чтобы не «угонять» прокрутку, если он скроллит вверх читая старое.
+    final stickToBottom = _isScrolledToBottom();
+    setState(() {});
+    if (stickToBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _scrollLogToEnd());
     }
+  }
+
+  bool _isScrolledToBottom() {
+    if (!_logScroll.hasClients) return true;
+    final pos = _logScroll.position;
+    return pos.pixels >= pos.maxScrollExtent - 24;
   }
 
   void _trimLogIfNeeded() {
@@ -316,13 +328,12 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   @override
   void onWindowClose() async {
     final isPrevented = await windowManager.isPreventClose();
-    if (isPrevented) {
-      await windowManager.hide();
-      widget.tray.showInfo(
-        'WiFi Monitor',
-        'Приложение свёрнуто в трей. Для выхода используйте меню трея.',
-      );
-    }
+    if (!isPrevented) return;
+    await windowManager.hide();
+    widget.tray.showInfo(
+      'WiFi Monitor',
+      'Приложение свёрнуто в трей. Для выхода используйте меню трея.',
+    );
   }
 
   // ────────────────────────────────────────
@@ -337,7 +348,6 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Заголовок
             const Padding(
               padding: EdgeInsets.only(bottom: 10),
               child: Text(
@@ -346,7 +356,6 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
                 style: kTitleStyle,
               ),
             ),
-            // Инфо о сети
             Padding(
               padding: const EdgeInsets.only(bottom: 5),
               child: Text(
@@ -355,18 +364,14 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
               ),
             ),
             const SizedBox(height: 5),
-            // Ping-плашка
             _buildPingFrame(),
             const SizedBox(height: 10),
             kSeparator(),
             const SizedBox(height: 10),
-            // Лог
             Expanded(child: _buildLog()),
             const SizedBox(height: 10),
-            // Кнопки
             _buildButtonsRow(),
             const SizedBox(height: 10),
-            // Нижняя статусная строка
             _buildBottomStatus(),
           ],
         ),
@@ -411,61 +416,36 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   }
 
   Widget _buildButtonsRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _isRunning ? null : _startMonitoring,
-            style: kButtonStart,
-            child: const Text(
-              'Запуск мониторинга',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _isRunning ? _stopMonitoring : null,
-            style: kButtonStop,
-            child: const Text(
-              'Остановить',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _clearLog,
-            style: kButtonClear,
-            child: const Text(
-              'Очистить лог',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _openSettings,
-            style: kButtonSettings,
-            child: const Text(
-              'Настройки',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ),
-      ],
-    );
+    // Декларативный список кнопок: меньше дублирования, проще менять порядок.
+    final buttons = <_ToolbarButton>[
+      _ToolbarButton(
+        label: 'Запуск мониторинга',
+        style: kButtonStart,
+        onPressed: _isRunning ? null : _startMonitoring,
+      ),
+      _ToolbarButton(
+        label: 'Остановить',
+        style: kButtonStop,
+        onPressed: _isRunning ? _stopMonitoring : null,
+      ),
+      _ToolbarButton(
+        label: 'Очистить лог',
+        style: kButtonClear,
+        onPressed: _clearLog,
+      ),
+      _ToolbarButton(
+        label: 'Настройки',
+        style: kButtonSettings,
+        onPressed: _openSettings,
+      ),
+    ];
+
+    final children = <Widget>[];
+    for (var i = 0; i < buttons.length; i++) {
+      if (i > 0) children.add(const SizedBox(width: 8));
+      children.add(Expanded(child: buttons[i].build()));
+    }
+    return Row(children: children);
   }
 
   Widget _buildBottomStatus() {
@@ -480,6 +460,33 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
           color: _bottomColor,
           fontWeight: _bottomWeight,
         ),
+      ),
+    );
+  }
+}
+
+/// Маленький дескриптор кнопки тулбара, чтобы не дублировать 4 одинаковых
+/// блока с Expanded/ElevatedButton/Text.
+class _ToolbarButton {
+  final String label;
+  final ButtonStyle style;
+  final VoidCallback? onPressed;
+
+  const _ToolbarButton({
+    required this.label,
+    required this.style,
+    required this.onPressed,
+  });
+
+  Widget build() {
+    return ElevatedButton(
+      onPressed: onPressed,
+      style: style,
+      child: Text(
+        label,
+        textAlign: TextAlign.center,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
     );
   }

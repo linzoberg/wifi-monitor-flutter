@@ -3,13 +3,15 @@
 // 1:1 порт PingThread из core/workers.py.
 //
 // Выход: Stream<PingResult> (broadcast) — UI и трей подписываются на одно и то же.
-// Управление: start() / stop(). Прерываемый sleep реализован через Completer,
-// поэтому stop() не ждёт окончания текущего интервала.
+// Управление: start() / stop(). Прерываемый sleep реализован через
+// core/interruptible_sleep.dart, поэтому stop() не ждёт окончания
+// текущего интервала.
 // ─────────────────────────────────────────────
 
 import 'dart:async';
 
 import 'constants.dart';
+import 'interruptible_sleep.dart';
 import 'models.dart';
 import 'process_runner.dart';
 
@@ -28,9 +30,7 @@ class PingService {
   final StreamController<PingResult> _controller =
       StreamController<PingResult>.broadcast();
 
-  /// Активный «sleep» — резолвится в null при штатном пробуждении
-  /// и в [_StopSignal] при stop(), чтобы выйти из цикла досрочно.
-  Completer<void>? _sleepCompleter;
+  final InterruptibleSleep _sleep = InterruptibleSleep();
 
   bool _running = false;
 
@@ -55,7 +55,7 @@ class PingService {
   Future<void> stop() async {
     if (!_running) return;
     _running = false;
-    _wakeSleep();
+    _sleep.wake();
   }
 
   /// Закрывает stream. После dispose() сервис больше не использовать.
@@ -68,17 +68,17 @@ class PingService {
 
   Future<void> _loop() async {
     // Стартовая задержка — как INITIAL_DELAY_MS в Python.
-    if (!await _interruptibleSleep(
+    if (!await _sleep.sleep(
       const Duration(milliseconds: kPingInitialDelayMs),
     )) {
       return;
     }
+    if (!_running) return;
 
-    final cmd = <String>['-n', '1', '-w', '2000', kPingHost];
+    const cmd = <String>['-n', '1', '-w', '2000', kPingHost];
 
     while (_running) {
       final ms = await _ping(cmd);
-
       if (!_running) return;
 
       if (ms == null) {
@@ -90,11 +90,8 @@ class PingService {
         _emit(PingOk(ms));
       }
 
-      if (!await _interruptibleSleep(
-        Duration(seconds: pingIntervalSec),
-      )) {
-        return;
-      }
+      if (!await _sleep.sleep(Duration(seconds: pingIntervalSec))) return;
+      if (!_running) return;
     }
   }
 
@@ -130,33 +127,5 @@ class PingService {
 
     if (result.ok && _rePingLt1.hasMatch(output)) return 1;
     return null;
-  }
-
-  // ── Прерываемый sleep ────────────────────
-
-  /// Возвращает true если проснулись штатно по таймеру, false если разбудил stop().
-  Future<bool> _interruptibleSleep(Duration d) async {
-    if (!_running) return false;
-    final completer = Completer<void>();
-    _sleepCompleter = completer;
-
-    final timer = Timer(d, () {
-      if (!completer.isCompleted) completer.complete();
-    });
-
-    try {
-      await completer.future;
-    } finally {
-      timer.cancel();
-      if (identical(_sleepCompleter, completer)) {
-        _sleepCompleter = null;
-      }
-    }
-    return _running;
-  }
-
-  void _wakeSleep() {
-    final c = _sleepCompleter;
-    if (c != null && !c.isCompleted) c.complete();
   }
 }

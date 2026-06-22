@@ -3,10 +3,10 @@
 //
 // Аналог tray-части ui/window.py:
 //   • Две иконки (зелёная/красная) → assets/tray_green.png и tray_red.png.
-//   • Tooltip: "WiFi Monitor" по умолчанию, "<SSID> — Подключено" / "Нет соединения"
-//     при обновлении состояния.
+//   • Tooltip: "WiFi Monitor" по умолчанию,
+//     "<SSID> — Подключено" / "Нет соединения" при обновлении состояния.
 //   • Меню: "Открыть" (показ окна), разделитель, "Выход".
-//   • Двойной клик по иконке → показать окно.
+//   • Правый клик → контекстное меню.
 //
 // API:
 //   final tray = TrayController(
@@ -14,25 +14,40 @@
 //     onQuit: () => mainWindowController.quitApp(),
 //   );
 //   await tray.init();
-//   await tray.setConnected(false, ssid: 'MyNet');   // красная + tooltip
-//   await tray.setConnected(true, ssid: 'MyNet');    // зелёная + tooltip
+//   await tray.setConnected(false, ssid: 'MyNet');
+//   await tray.setConnected(true,  ssid: 'MyNet');
 //   await tray.dispose();
+//
+// Заметки:
+//   • setConnected() серриализует setIcon/setToolTip через _opLock,
+//     чтобы быстрые подряд идущие смены состояний не наезжали друг на друга
+//     (tray_manager на Windows иногда теряет последний вызов).
+//   • Удалены пустые no-op методы TrayListener — миксин даёт дефолтные
+//     реализации, лишний шум в файле не нужен.
 // ─────────────────────────────────────────────
+
+import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:tray_manager/tray_manager.dart';
 
-typedef VoidAsyncCallback = Future<void> Function();
-
 class TrayController with TrayListener {
+  static const String _iconGreen = 'assets/tray_green.png';
+  static const String _iconRed = 'assets/tray_red.png';
+  static const String _defaultTooltip = 'WiFi Monitor';
+
   final Future<void> Function() onOpen;
   final Future<void> Function() onQuit;
 
-  /// Текущее состояние, чтобы избегать лишних setIcon/setToolTip.
+  /// Кэш состояния, чтобы избегать лишних setIcon/setToolTip.
   bool? _lastConnected;
   String _lastSsid = '';
 
   bool _initialized = false;
+
+  /// Серриализует операции с трейем — иначе на быстрых сменах состояния
+  /// tray_manager на Windows может проглотить последний вызов.
+  Future<void> _opLock = Future<void>.value();
 
   TrayController({
     required this.onOpen,
@@ -48,9 +63,11 @@ class TrayController with TrayListener {
 
     // Стартовая иконка — красная (соединение ещё не подтверждено),
     // 1:1 с Python: self.tray.setIcon(self.icon_red).
-    await trayManager.setIcon('assets/tray_red.png');
-    await trayManager.setToolTip('WiFi Monitor');
-    await trayManager.setContextMenu(_buildMenu());
+    await _runLocked(() async {
+      await trayManager.setIcon(_iconRed);
+      await trayManager.setToolTip(_defaultTooltip);
+      await trayManager.setContextMenu(_buildMenu());
+    });
   }
 
   Menu _buildMenu() {
@@ -71,26 +88,24 @@ class TrayController with TrayListener {
     _lastConnected = connected;
     _lastSsid = ssid;
 
-    try {
-      await trayManager.setIcon(
-        connected ? 'assets/tray_green.png' : 'assets/tray_red.png',
-      );
-      await trayManager.setToolTip(
-        connected ? '$ssid — Подключено' : '$ssid — Нет соединения',
-      );
-    } catch (e, st) {
-      // Трей мог не успеть инициализироваться, или система отозвала иконку —
-      // не валим из-за этого приложение.
-      if (kDebugMode) {
-        debugPrint('TrayController.setConnected error: $e\n$st');
+    await _runLocked(() async {
+      try {
+        await trayManager.setIcon(connected ? _iconGreen : _iconRed);
+        await trayManager.setToolTip(
+          connected ? '$ssid — Подключено' : '$ssid — Нет соединения',
+        );
+      } catch (e, st) {
+        // Трей мог не успеть инициализироваться или система отозвала иконку.
+        if (kDebugMode) {
+          debugPrint('TrayController.setConnected error: $e\n$st');
+        }
       }
-    }
+    });
   }
 
-  /// Показывает balloon-уведомление (используется при сворачивании в трей).
-  /// tray_manager не имеет кросс-платформенного API уведомлений, поэтому
-  /// просто пишем в debug. На Windows balloon вешает сама система при
-  /// событиях иконки — нам этого достаточно, чтобы не падать.
+  /// Информационный балун при сворачивании в трей. tray_manager не даёт
+  /// кросс-платформенного API уведомлений, поэтому ограничиваемся debug-логом
+  /// — на Windows система сама показывает балун-tooltip иконки.
   void showInfo(String title, String message) {
     if (kDebugMode) {
       debugPrint('Tray info: $title — $message');
@@ -104,33 +119,26 @@ class TrayController with TrayListener {
     try {
       await trayManager.destroy();
     } catch (_) {
-      // Игнорируем — мог быть уже уничтожен системой.
+      // Уже уничтожен системой — игнорируем.
     }
+  }
+
+  /// Серриализует операции с трей-менеджером, ошибки гасит сам, чтобы
+  /// сбойная операция не блокировала следующие.
+  Future<T> _runLocked<T>(Future<T> Function() action) {
+    final next = _opLock.then((_) => action());
+    _opLock = next.then<void>(
+      (_) {},
+      onError: (Object _) {},
+    );
+    return next;
   }
 
   // ── TrayListener ─────────────────────────
 
   @override
-  void onTrayIconMouseDown() {
-    // Левый клик — открыть. На Windows это даёт более привычное поведение,
-    // чем ждать только двойной клик; пользователи Python-версии могли
-    // ожидать одинарного клика тоже.
-    // Если поведение покажется навязчивым — оставим только onTrayIconDoubleClick.
-  }
-
-  @override
   void onTrayIconRightMouseDown() {
     trayManager.popUpContextMenu();
-  }
-
-  @override
-  void onTrayIconMouseUp() {
-    // no-op
-  }
-
-  @override
-  void onTrayIconRightMouseUp() {
-    // no-op
   }
 
   @override
@@ -145,10 +153,3 @@ class TrayController with TrayListener {
     }
   }
 }
-
-// ─────────────────────────────────────────────
-// tray_manager на Windows различает onTrayIconDoubleClick через клиентский
-// код пакета — у разных версий пакета сигнатура может отличаться, поэтому
-// держим обработку двойного клика опциональной (см. подмешивание ниже,
-// если потребуется).
-// ─────────────────────────────────────────────

@@ -132,7 +132,7 @@ class _CredentialsDialogState extends State<_CredentialsDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _FormRow(
+            AppFormRow(
               label: 'SSID сети:',
               field: TextField(
                 controller: _ssidCtrl,
@@ -147,7 +147,7 @@ class _CredentialsDialogState extends State<_CredentialsDialog> {
               ),
             ),
             const SizedBox(height: 8),
-            _FormRow(
+            AppFormRow(
               label: 'Пароль:',
               field: TextField(
                 controller: _passwordCtrl,
@@ -202,31 +202,3 @@ class _CredentialsDialogState extends State<_CredentialsDialog> {
   }
 }
 
-/// Внутренняя "ячейка формы" в стиле QFormLayout: слева подпись фиксированной
-/// ширины, справа — поле ввода.
-class _FormRow extends StatelessWidget {
-  final String label;
-  final Widget field;
-
-  const _FormRow({required this.label, required this.field});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              label,
-              style: const TextStyle(color: AppColors.titleDark),
-            ),
-          ),
-          Expanded(child: field),
-        ],
-      ),
-    );
-  }
-}
