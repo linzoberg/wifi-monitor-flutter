@@ -20,7 +20,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:tray_manager/tray_manager.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'core/models.dart';
@@ -87,16 +87,20 @@ Future<void> main(List<String> args) async {
   // ── 3. Запускаем UI ────────────────────────
   // Сначала поднимаем приложение, чтобы был BuildContext для диалога
   // запроса кредов. Если creds нет — MainWindow стартует уже с креды.
-  runApp(_Bootstrap(
-    autostart: autostart,
-    settings: settings,
-    initialCreds: creds,
-  ));
+  runApp(
+    _Bootstrap(
+      autostart: autostart,
+      settings: settings,
+      initialCreds: creds,
+    ),
+  );
 }
 
-/// Загрузочный виджет: если креды отсутствуют — показывает диалог,
-/// затем загружает Prefs и подменяет себя на MainWindow.
-class _Bootstrap extends StatefulWidget {
+/// Корневой виджет приложения. ВАЖНО: внутри `MaterialApp.home` сидит
+/// _BootRoot, который и занимается загрузкой/диалогом/трей. Так у диалога
+/// есть валидный BuildContext с MaterialLocalizations (иначе Flutter падает
+/// с "No MaterialLocalizations found").
+class _Bootstrap extends StatelessWidget {
   final bool autostart;
   final SettingsService settings;
   final Credentials initialCreds;
@@ -108,10 +112,51 @@ class _Bootstrap extends StatefulWidget {
   });
 
   @override
-  State<_Bootstrap> createState() => _BootstrapState();
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: kAppTitle,
+      debugShowCheckedModeBanner: false,
+      theme: buildAppTheme(),
+      // Локализации обязательны для Material/Cupertino-виджетов и для
+      // showDialog. Явно указываем русскую локаль, чтобы стандартные
+      // тексты (например, "Скрыть"/"Показать" в TextField) были на русском.
+      locale: const Locale('ru'),
+      supportedLocales: const [Locale('ru'), Locale('en')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: _BootRoot(
+        autostart: autostart,
+        settings: settings,
+        initialCreds: initialCreds,
+      ),
+    );
+  }
 }
 
-class _BootstrapState extends State<_Bootstrap> {
+/// Загрузочный экран: если креды отсутствуют — показывает диалог,
+/// затем загружает Prefs и подменяет себя на MainWindow.
+///
+/// Живёт ВНУТРИ MaterialApp.home, поэтому BuildContext уже содержит
+/// MaterialLocalizations / Navigator / Overlay — всё, что нужно showDialog.
+class _BootRoot extends StatefulWidget {
+  final bool autostart;
+  final SettingsService settings;
+  final Credentials initialCreds;
+
+  const _BootRoot({
+    required this.autostart,
+    required this.settings,
+    required this.initialCreds,
+  });
+
+  @override
+  State<_BootRoot> createState() => _BootRootState();
+}
+
+class _BootRootState extends State<_BootRoot> {
   Credentials? _creds;
   Prefs? _prefs;
   TrayController? _tray;
@@ -194,20 +239,11 @@ class _BootstrapState extends State<_Bootstrap> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: kAppTitle,
-      debugShowCheckedModeBanner: false,
-      theme: buildAppTheme(),
-      home: _buildHome(),
-    );
-  }
-
-  Widget _buildHome() {
     if (_fatalError != null) {
       return _FatalErrorScreen(message: _fatalError!, onExit: _quit);
     }
     if (_starting || _creds == null || _prefs == null || _tray == null) {
-      // Пустой Scaffold, чтобы был BuildContext для модального диалога.
+      // Пустой Scaffold, чтобы окно было "живым" пока поднимается диалог.
       return const Scaffold(
         backgroundColor: Colors.white,
         body: SizedBox.shrink(),
@@ -224,18 +260,12 @@ class _BootstrapState extends State<_Bootstrap> {
 
   @override
   void dispose() {
-    // На всякий случай — слушателя трея нужно снять, чтобы при hot-reload
-    // не было утечки.
-    try {
-      trayManager.removeListener(_tray as TrayListener? ?? _NoopListener());
-    } catch (_) {/* ignore */}
+    // Слушателя трея снимает сам TrayController.dispose(); здесь ничего
+    // делать не нужно — в прошлой версии тут был неверный cast, который
+    // ничего полезного не делал.
     super.dispose();
   }
 }
-
-/// Заглушка для removeListener в dispose() — нужна, чтобы линтер не ругался
-/// на nullable cast, и не более.
-class _NoopListener with TrayListener {}
 
 class _FatalErrorScreen extends StatelessWidget {
   final String message;

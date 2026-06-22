@@ -11,6 +11,11 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Локализации Material/Cupertino — нужны для showDialog и виджетов,
+  # иначе падает с "No MaterialLocalizations found".
+  flutter_localizations:
+    sdk: flutter
+
   # Системный трей: иконка + меню + двойной клик
   tray_manager: ^0.2.3
 

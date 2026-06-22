@@ -56,45 +56,50 @@ class AppColors {
 const String kFontUi = 'Arial';
 const String kFontMono = 'Consolas';
 
+// Размеры: в Qt 9pt рендерится как ~12px при 96 DPI (1pt ≈ 1.33px).
+// Flutter же работает в логических пикселях, поэтому чистый 9 выглядит
+// вдвое мельче. Используем эквиваленты в пикселях, чтобы визуально совпадать
+// с Python-оригиналом.
 const TextStyle kTitleStyle = TextStyle(
   fontFamily: kFontUi,
-  fontSize: 16,
+  fontSize: 18,
   fontWeight: FontWeight.bold,
   color: AppColors.titleDark,
 );
 
 const TextStyle kInfoStyle = TextStyle(
   fontFamily: kFontUi,
-  fontSize: 10,
+  fontSize: 13,
   color: AppColors.textMuted,
 );
 
 const TextStyle kPingTitleStyle = TextStyle(
   fontFamily: kFontUi,
-  fontSize: 9,
+  fontSize: 12,
   color: AppColors.textMuted,
 );
 
 const TextStyle kPingValueBaseStyle = TextStyle(
   fontFamily: kFontUi,
-  fontSize: 9,
+  fontSize: 12,
   fontWeight: FontWeight.bold,
 );
 
 const TextStyle kLogStyle = TextStyle(
   fontFamily: kFontMono,
-  fontSize: 9,
+  fontSize: 12,
   color: AppColors.titleDark,
+  height: 1.3,
 );
 
 const TextStyle kBottomStatusBaseStyle = TextStyle(
   fontFamily: kFontUi,
-  fontSize: 9,
+  fontSize: 12,
 );
 
 const TextStyle kHintStyle = TextStyle(
   color: AppColors.textMuted,
-  fontSize: 11,
+  fontSize: 12,
 );
 
 // ── Декорации ───────────────────────────────
@@ -132,14 +137,18 @@ ButtonStyle appButtonStyle({
   return ButtonStyle(
     foregroundColor: WidgetStateProperty.all(Colors.white),
     elevation: WidgetStateProperty.all(0),
+    // Поднял vertical с 8 до 12 + зафиксировал minimumSize, чтобы bold-текст
+    // не обрезался снизу. Горизонтальный padding уменьшил с 16 до 12, чтобы
+    // 4 кнопки влезали в 600px-окно без обрезки.
     padding: WidgetStateProperty.all(
-      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
     ),
+    minimumSize: WidgetStateProperty.all(const Size(0, 40)),
     shape: WidgetStateProperty.all(
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
     ),
     textStyle: WidgetStateProperty.all(
-      const TextStyle(fontWeight: FontWeight.bold),
+      const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
     ),
     backgroundColor: WidgetStateProperty.resolveWith<Color>((states) {
       if (states.contains(WidgetState.disabled)) {

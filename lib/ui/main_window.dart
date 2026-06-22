@@ -413,28 +413,56 @@ class _MainWindowState extends State<MainWindow> with WindowListener {
   Widget _buildButtonsRow() {
     return Row(
       children: [
-        ElevatedButton(
-          onPressed: _isRunning ? null : _startMonitoring,
-          style: kButtonStart,
-          child: const Text('Запуск мониторинга'),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: _isRunning ? null : _startMonitoring,
+            style: kButtonStart,
+            child: const Text(
+              'Запуск мониторинга',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ),
         const SizedBox(width: 8),
-        ElevatedButton(
-          onPressed: _isRunning ? _stopMonitoring : null,
-          style: kButtonStop,
-          child: const Text('Остановить'),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: _isRunning ? _stopMonitoring : null,
+            style: kButtonStop,
+            child: const Text(
+              'Остановить',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ),
         const SizedBox(width: 8),
-        ElevatedButton(
-          onPressed: _clearLog,
-          style: kButtonClear,
-          child: const Text('Очистить лог'),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: _clearLog,
+            style: kButtonClear,
+            child: const Text(
+              'Очистить лог',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ),
         const SizedBox(width: 8),
-        ElevatedButton(
-          onPressed: _openSettings,
-          style: kButtonSettings,
-          child: const Text('Настройки'),
+        Expanded(
+          child: ElevatedButton(
+            onPressed: _openSettings,
+            style: kButtonSettings,
+            child: const Text(
+              'Настройки',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
         ),
       ],
     );
